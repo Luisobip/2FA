@@ -32,7 +32,7 @@ class DatabaseManager:
             CREATE TABLE IF NOT EXISTS login_attempts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 username TEXT NOT NULL,
-                success BOOLEAN NOT NULL,
+                success INTEGER NOT NULL,
                 method TEXT,
                 timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
@@ -154,9 +154,80 @@ class DatabaseManager:
         conn = sqlite3.connect(self.db_name)
         cursor = conn.cursor()
         
+        # CORRECCIÓN: Convertir explícitamente a entero
+        success_int = 1 if success else 0
+        
         cursor.execute(
             'INSERT INTO login_attempts (username, success, method) VALUES (?, ?, ?)',
-            (username, success, method)
+            (username, success_int, method)
         )
         conn.commit()
         conn.close()
+    
+    def get_login_history(self, username, limit=10):
+        """Obtiene el historial de intentos de login de un usuario"""
+        conn = sqlite3.connect(self.db_name)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT method, success, timestamp 
+            FROM login_attempts 
+            WHERE username = ? 
+            ORDER BY timestamp DESC 
+            LIMIT ?
+        ''', (username, limit))
+        
+        results = cursor.fetchall()
+        conn.close()
+        
+        return results
+    
+    def get_login_stats(self, username):
+        """Obtiene estadísticas de login de un usuario"""
+        conn = sqlite3.connect(self.db_name)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT 
+                COUNT(*) as total_attempts,
+                SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as successful,
+                SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) as failed
+            FROM login_attempts 
+            WHERE username = ?
+        ''', (username,))
+        
+        result = cursor.fetchone()
+        conn.close()
+        
+        if result:
+            return {
+                'total_attempts': result[0],
+                'successful': result[1] or 0,
+                'failed': result[2] or 0,
+                'success_rate': (result[1] or 0) / result[0] * 100 if result[0] > 0 else 0
+            }
+        return None
+    
+    def clean_corrupted_records(self):
+        """Limpia registros corruptos con valores binarios en success"""
+        conn = sqlite3.connect(self.db_name)
+        cursor = conn.cursor()
+        
+        # Actualizar registros con valores binarios
+        cursor.execute('''
+            UPDATE login_attempts 
+            SET success = 1 
+            WHERE typeof(success) = 'blob' AND success = X'01'
+        ''')
+        
+        cursor.execute('''
+            UPDATE login_attempts 
+            SET success = 0 
+            WHERE typeof(success) = 'blob' AND success = X'00'
+        ''')
+        
+        affected_rows = cursor.rowcount
+        conn.commit()
+        conn.close()
+        
+        return affected_rows
