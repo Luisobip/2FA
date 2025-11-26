@@ -1,0 +1,271 @@
+{% extends "base.html" %}
+
+{% block title %}Verificación Facial{% endblock %}
+
+{% block extra_head %}
+<script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+<style>
+    .video-container {
+        position: relative;
+        max-width: 640px;
+        margin: 20px auto;
+    }
+
+    #video {
+        width: 100%;
+        border-radius: 15px;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+    }
+
+    canvas {
+        display: none;
+    }
+
+    .overlay {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        pointer-events: none;
+    }
+
+    #faceBox {
+        position: absolute;
+        border: 3px solid #00ff00;
+        border-radius: 10px;
+        display: none;
+    }
+
+    #statusMessage {
+        position: absolute;
+        bottom: 60px;
+        left: 50%;
+        transform: translateX(-50%);
+        background: rgba(0, 0, 0, 0.8);
+        color: white;
+        padding: 15px 30px;
+        border-radius: 10px;
+        font-weight: 600;
+        font-size: 18px;
+        white-space: nowrap;
+    }
+
+    .checklist {
+        position: absolute;
+        top: 20px;
+        left: 20px;
+        background: rgba(0, 0, 0, 0.8);
+        color: white;
+        padding: 15px 20px;
+        border-radius: 10px;
+        font-size: 14px;
+    }
+
+    .checklist-item {
+        margin: 8px 0;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
+
+    .checklist-item.completed {
+        color: #0f0;
+    }
+
+    .icon {
+        font-size: 20px;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="logo">📹</div>
+<h1>Verificación Facial</h1>
+<p style="text-align: center; color: #666; margin-bottom: 20px;">
+    Usuario: <strong>{{ username }}</strong>
+</p>
+
+<div class="info" id="instructions">
+    <strong>Instrucciones:</strong><br>
+    1. Permite el acceso a tu cámara<br>
+    2. Coloca tu rostro frente a la cámara<br>
+    3. Una vez reconocido, parpadea<br>
+    4. Luego abre y cierra la boca
+</div>
+
+<div class="video-container">
+    <video id="video" autoplay playsinline></video>
+    <canvas id="canvas"></canvas>
+
+    <div class="overlay">
+        <div id="faceBox"></div>
+        <div id="statusMessage">Inicializando cámara...</div>
+
+        <div class="checklist">
+            <div class="checklist-item" id="checkIdentity">
+                <span class="icon">⏳</span>
+                <span>Verificando identidad...</span>
+            </div>
+            <div class="checklist-item" id="checkBlink">
+                <span class="icon">⏳</span>
+                <span>Parpadeo</span>
+            </div>
+            <div class="checklist-item" id="checkMouth">
+                <span class="icon">⏳</span>
+                <span>Apertura de boca</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="progress-bar">
+    <div class="progress-fill" id="progressFill" style="width: 0%;">0%</div>
+</div>
+
+<div class="link">
+    <a href="{{ url_for('verify_2fa') }}">← Volver</a>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+    const socket = io();
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const faceBox = document.getElementById('faceBox');
+    const statusMessage = document.getElementById('statusMessage');
+    const progressFill = document.getElementById('progressFill');
+
+    let streaming = false;
+    let frameInterval;
+
+    // Acceder a la cámara
+    navigator.mediaDevices.getUserMedia({
+        video: {
+            width: { ideal: 640 },
+            height: { ideal: 480 },
+            facingMode: 'user'
+        }
+    })
+    .then(stream => {
+        video.srcObject = stream;
+        video.onloadedmetadata = () => {
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            statusMessage.textContent = 'Coloca tu rostro frente a la cámara';
+            startStreaming();
+        };
+    })
+    .catch(err => {
+        console.error('Error al acceder a la cámara:', err);
+        statusMessage.textContent = 'Error: No se pudo acceder a la cámara';
+        statusMessage.style.background = 'rgba(255, 0, 0, 0.8)';
+    });
+
+    function startStreaming() {
+        if (streaming) return;
+        streaming = true;
+
+        // Enviar frames cada 100ms (10 FPS)
+        frameInterval = setInterval(() => {
+            if (video.readyState === video.HAVE_ENOUGH_DATA) {
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                const imageData = canvas.toDataURL('image/jpeg', 0.8);
+                socket.emit('video_frame', { image: imageData });
+            }
+        }, 100);
+    }
+
+    function stopStreaming() {
+        streaming = false;
+        if (frameInterval) {
+            clearInterval(frameInterval);
+        }
+        if (video.srcObject) {
+            video.srcObject.getTracks().forEach(track => track.stop());
+        }
+    }
+
+    // Recibir actualizaciones de verificación
+    socket.on('verification_update', (data) => {
+        console.log('Update:', data);
+
+        // Actualizar mensaje de estado
+        statusMessage.textContent = data.message || 'Procesando...';
+
+        // Actualizar barra de progreso
+        const progress = data.progress || 0;
+        progressFill.style.width = progress + '%';
+        progressFill.textContent = Math.round(progress) + '%';
+
+        // Mostrar/ocultar caja de rostro
+        if (data.box && data.face_detected) {
+            const videoRect = video.getBoundingClientRect();
+            const scaleX = videoRect.width / canvas.width;
+            const scaleY = videoRect.height / canvas.height;
+
+            faceBox.style.display = 'block';
+            faceBox.style.left = (data.box.x1 * scaleX) + 'px';
+            faceBox.style.top = (data.box.y1 * scaleY) + 'px';
+            faceBox.style.width = ((data.box.x2 - data.box.x1) * scaleX) + 'px';
+            faceBox.style.height = ((data.box.y2 - data.box.y1) * scaleY) + 'px';
+
+            // Color según estado
+            if (data.identity_verified) {
+                faceBox.style.borderColor = '#00ff00';
+            } else {
+                faceBox.style.borderColor = '#ffaa00';
+            }
+        } else {
+            faceBox.style.display = 'none';
+        }
+
+        // Actualizar checklist
+        if (data.identity_verified) {
+            document.getElementById('checkIdentity').classList.add('completed');
+            document.getElementById('checkIdentity').innerHTML = '<span class="icon">✓</span><span>Identidad verificada</span>';
+        }
+
+        if (data.blink_detected) {
+            document.getElementById('checkBlink').classList.add('completed');
+            document.getElementById('checkBlink').innerHTML = '<span class="icon">✓</span><span>Parpadeo detectado</span>';
+        }
+
+        if (data.mouth_detected) {
+            document.getElementById('checkMouth').classList.add('completed');
+            document.getElementById('checkMouth').innerHTML = '<span class="icon">✓</span><span>Boca detectada</span>';
+        }
+    });
+
+    // Verificación completa
+    socket.on('verification_complete', (data) => {
+        console.log('Complete:', data);
+
+        if (data.success) {
+            statusMessage.textContent = '✓ ¡Verificación exitosa!';
+            statusMessage.style.background = 'rgba(0, 255, 0, 0.8)';
+            progressFill.style.width = '100%';
+            progressFill.textContent = '100%';
+
+            stopStreaming();
+
+            // Redirigir al dashboard
+            setTimeout(() => {
+                window.location.href = data.redirect;
+            }, 2000);
+        }
+    });
+
+    // Error de verificación
+    socket.on('verification_error', (data) => {
+        console.error('Error:', data);
+        statusMessage.textContent = '✗ Error: ' + data.error;
+        statusMessage.style.background = 'rgba(255, 0, 0, 0.8)';
+    });
+
+    // Limpiar al salir
+    window.addEventListener('beforeunload', stopStreaming);
+</script>
+{% endblock %}

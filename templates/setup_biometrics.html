@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+
+{% block title %}Configurar Biometría{% endblock %}
+
+{% block content %}
+<div class="logo">⚙️</div>
+<h1>Configurar Métodos Biométricos</h1>
+<p style="text-align: center; color: #666; margin-bottom: 30px;">
+    Usuario: <strong>{{ username }}</strong>
+</p>
+
+{% if is_authenticated %}
+<div class="info">
+    <h3 style="margin-bottom: 15px;">Estado actual de tus métodos:</h3>
+    <div style="display: flex; flex-direction: column; gap: 10px;">
+        <div style="display: flex; align-items: center; gap: 10px;">
+            {% if has_facial %}
+                <span style="color: green; font-size: 24px;">✓</span>
+                <span><strong>Verificación Facial:</strong> Configurada</span>
+            {% else %}
+                <span style="color: #999; font-size: 24px;">○</span>
+                <span><strong>Verificación Facial:</strong> No configurada</span>
+            {% endif %}
+        </div>
+
+        <div style="display: flex; align-items: center; gap: 10px;">
+            {% if has_voice %}
+                <span style="color: green; font-size: 24px;">✓</span>
+                <span><strong>Verificación de Voz:</strong> Configurada</span>
+            {% else %}
+                <span style="color: #999; font-size: 24px;">○</span>
+                <span><strong>Verificación de Voz:</strong> No configurada</span>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% else %}
+<div class="info">
+    Configura al menos un método biométrico para proteger tu cuenta
+</div>
+{% endif %}
+
+<a href="{{ url_for('facial_registration') }}" style="text-decoration: none;">
+    <button class="btn">
+        {% if has_facial %}
+            📹 Actualizar Rostro
+        {% else %}
+            📹 Registrar Rostro
+        {% endif %}
+    </button>
+</a>
+
+<a href="#" style="text-decoration: none;">
+    <button class="btn btn-secondary">
+        {% if has_voice %}
+            🎤 Actualizar Voz
+        {% else %}
+            🎤 Registrar Voz
+        {% endif %}
+    </button>
+</a>
+
+<div class="link">
+    <a href="{{ url_for('dashboard') if is_authenticated else url_for('logout') }}">
+        {% if is_authenticated %}
+            ← Volver al dashboard
+        {% else %}
+            Omitir por ahora
+        {% endif %}
+    </a>
+</div>
+{% endblock %}

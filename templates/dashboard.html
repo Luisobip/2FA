@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - Sistema 2FA{% endblock %}
+
+{% block content %}
+<div class="logo">✓</div>
+<h1>Bienvenido, {{ username }}!</h1>
+
+<div class="success">
+    ✓ Has iniciado sesión correctamente con 2FA
+</div>
+
+<div class="info">
+    <h3 style="margin-bottom: 15px;">Estado de tus métodos biométricos:</h3>
+    <div style="display: flex; flex-direction: column; gap: 10px;">
+        <div style="display: flex; align-items: center; gap: 10px;">
+            {% if has_facial %}
+                <span style="color: green; font-size: 24px;">✓</span>
+                <span><strong>Verificación Facial:</strong> Configurada</span>
+            {% else %}
+                <span style="color: #999; font-size: 24px;">○</span>
+                <span><strong>Verificación Facial:</strong> No configurada</span>
+            {% endif %}
+        </div>
+
+        <div style="display: flex; align-items: center; gap: 10px;">
+            {% if has_voice %}
+                <span style="color: green; font-size: 24px;">✓</span>
+                <span><strong>Verificación de Voz:</strong> Configurada</span>
+            {% else %}
+                <span style="color: #999; font-size: 24px;">○</span>
+                <span><strong>Verificación de Voz:</strong> No configurada</span>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<a href="{{ url_for('setup_biometrics') }}" style="text-decoration: none;">
+    <button class="btn btn-secondary">
+        ⚙️ Configurar Métodos Biométricos
+    </button>
+</a>
+
+<div class="link" style="margin-top: 30px;">
+    <a href="{{ url_for('logout') }}">Cerrar sesión</a>
+</div>
+{% endblock %}

@@ -16,6 +16,17 @@ bcrypt>=4.0.1
 numpy>=1.24.0
 pillow>=10.0.0
 
+# Interfaz web - Streamlit
+streamlit>=1.28.0
+streamlit-webrtc>=0.47.0
+
+# Interfaz web - Flask
+flask>=3.0.0
+flask-socketio>=5.3.0
+flask-session>=0.5.0
+python-engineio>=4.8.0
+python-socketio>=5.10.0
+
 # Touch ID (solo macOS)
 pyobjc-framework-LocalAuthentication>=9.0; sys_platform == 'darwin'
 

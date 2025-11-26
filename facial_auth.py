@@ -21,7 +21,7 @@ class FacialAuth:
         
         # Umbrales para detección de vivacidad
         self.EAR_THRESHOLD = 0.15  # Umbral para parpadeo
-        self.MAR_THRESHOLD = 0.26  # Umbral para boca abierta
+        self.MAR_THRESHOLD = 0.25  # Umbral para boca abierta
         self.CONSECUTIVE_FRAMES = 3  # Frames necesarios para confirmar gesto
         
         # Estados para detectar transiciones
@@ -491,7 +491,7 @@ class FacialAuth:
         
         return encoding
     
-    def verify_with_liveness(self, username, stored_encoding):
+    def verify_with_liveness(self, username, stored_encoding, skip_prompt=False):
         """Verifica identidad con detección de vivacidad por TRANSICIONES (MEJORADO)"""
         print("\n🔍 Verificación facial con detección de vivacidad")
         print("\nInstrucciones:")
@@ -501,8 +501,9 @@ class FacialAuth:
         print("   👄  BOCA: Cerrada → abierta → cerrada")
         print("\n🚨 IMPORTANTE: Se detectan MOVIMIENTOS, no estados estáticos")
         print("Presiona 'q' para cancelar\n")
-        
-        input("Presiona ENTER para comenzar...")
+
+        if not skip_prompt:
+            input("Presiona ENTER para comenzar...")
         
         cap = cv2.VideoCapture(0)
         
@@ -535,16 +536,26 @@ class FacialAuth:
         mouth_status_msg = "Esperando..."
         
         print("⏳ Iniciando verificación...\n")
-        
+
         while True:
-            ret, frame = cap.read()
-            if not ret:
+            try:
+                ret, frame = cap.read()
+                if not ret:
+                    print("DEBUG: cap.read() returned False")
+                    break
+            except Exception as e:
+                print(f"DEBUG: Error en cap.read(): {type(e).__name__}: {e}")
                 break
-            
+
             frame_count += 1
             timeout_frames += 1
-            display = frame.copy()
-            h, w = display.shape[:2]
+
+            try:
+                display = frame.copy()
+                h, w = display.shape[:2]
+            except Exception as e:
+                print(f"DEBUG: Error en frame.copy() o shape: {type(e).__name__}: {e}")
+                break
             
             # Timeout de seguridad
             if timeout_frames > max_timeout:
@@ -553,32 +564,53 @@ class FacialAuth:
             
             # Detectar rostro cada 3 frames
             if frame_count % 3 == 0:
-                face = self._detect_face_dnn(frame)
-                if face:
-                    last_face = self._smooth_face_location(face)
+                try:
+                    face = self._detect_face_dnn(frame)
+                    if face:
+                        last_face = self._smooth_face_location(face)
+                except Exception as e:
+                    print(f"DEBUG: Error en _detect_face_dnn(): {type(e).__name__}: {e}")
+                    break
             
             # Verificar identidad si hay rostro detectado
             if last_face and frame_count % 5 == 0:
-                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                locations = face_recognition.face_locations(rgb, model="hog")
-                
+                try:
+                    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                except Exception as e:
+                    print(f"DEBUG: Error en cv2.cvtColor(): {type(e).__name__}: {e}")
+                    break
+
+                try:
+                    locations = face_recognition.face_locations(rgb, model="hog")
+                except Exception as e:
+                    print(f"DEBUG: Error en face_locations(): {type(e).__name__}: {e}")
+                    break
+
                 if locations:
-                    encodings = face_recognition.face_encodings(rgb, locations)
-                    
+                    try:
+                        encodings = face_recognition.face_encodings(rgb, locations)
+                    except Exception as e:
+                        print(f"DEBUG: Error en face_encodings(): {type(e).__name__}: {e}")
+                        break
+
                     if encodings:
-                        matches = face_recognition.compare_faces(
-                            [stored_encoding], encodings[0], tolerance=self.tolerance
-                        )
-                        distance = face_recognition.face_distance(
-                            [stored_encoding], encodings[0]
-                        )[0]
-                        
-                        if matches[0] and distance < self.tolerance:
-                            identity_verified = True
-                            frames_verified += 1
-                        else:
-                            identity_verified = False
-                            frames_verified = 0
+                        try:
+                            matches = face_recognition.compare_faces(
+                                [stored_encoding], encodings[0], tolerance=self.tolerance
+                            )
+                            distance = face_recognition.face_distance(
+                                [stored_encoding], encodings[0]
+                            )[0]
+
+                            if matches[0] and distance < self.tolerance:
+                                identity_verified = True
+                                frames_verified += 1
+                            else:
+                                identity_verified = False
+                                frames_verified = 0
+                        except Exception as e:
+                            print(f"DEBUG: Error en compare_faces/face_distance(): {type(e).__name__}: {e}")
+                            break
             
             # Dibujar rostro y estado
             if last_face:
@@ -588,11 +620,19 @@ class FacialAuth:
                     # Identidad confirmada, detectar transiciones
                     if not (blink_transition_detected and mouth_transition_detected):
                         # Detectar gestos en cada frame
-                        gesture, value, keypoints = self._detect_liveness_gesture(frame)
-                        
+                        try:
+                            gesture, value, keypoints = self._detect_liveness_gesture(frame)
+                        except Exception as e:
+                            print(f"DEBUG: Error en _detect_liveness_gesture(): {type(e).__name__}: {e}")
+                            break
+
                         # Dibujar keypoints siempre que haya datos
                         if keypoints:
-                            self._draw_keypoints(display, keypoints)
+                            try:
+                                self._draw_keypoints(display, keypoints)
+                            except Exception as e:
+                                print(f"DEBUG: Error en _draw_keypoints(): {type(e).__name__}: {e}")
+                                break
                             
                             ear = keypoints['ear']
                             mar = keypoints['mar']
@@ -626,24 +666,32 @@ class FacialAuth:
                         
                         # Mostrar checklist con estados
                         check_y = y1 - 110
-                        
-                        # Estado del parpadeo
-                        blink_icon = "✓" if blink_transition_detected else "⟳"
-                        blink_color = (0, 255, 0) if blink_transition_detected else (0, 165, 255)
-                        cv2.putText(display, f"{blink_icon} Parpadeo: {blink_status_msg}", (x1, check_y),
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, blink_color, 2)
-                        
-                        # Estado de la boca
-                        mouth_icon = "✓" if mouth_transition_detected else "⟳"
-                        mouth_color = (0, 255, 0) if mouth_transition_detected else (0, 165, 255)
-                        cv2.putText(display, f"{mouth_icon} Boca: {mouth_status_msg}", (x1, check_y + 25),
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, mouth_color, 2)
+
+                        try:
+                            # Estado del parpadeo
+                            blink_icon = "✓" if blink_transition_detected else "⟳"
+                            blink_color = (0, 255, 0) if blink_transition_detected else (0, 165, 255)
+                            cv2.putText(display, f"{blink_icon} Parpadeo: {blink_status_msg}", (x1, check_y),
+                                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, blink_color, 2)
+
+                            # Estado de la boca
+                            mouth_icon = "✓" if mouth_transition_detected else "⟳"
+                            mouth_color = (0, 255, 0) if mouth_transition_detected else (0, 165, 255)
+                            cv2.putText(display, f"{mouth_icon} Boca: {mouth_status_msg}", (x1, check_y + 25),
+                                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, mouth_color, 2)
+                        except Exception as e:
+                            print(f"DEBUG: Error en cv2.putText() checklist: {type(e).__name__}: {e}")
+                            break
                         
                     else:
                         color = (0, 255, 0)
                         label = "VERIFICACION EXITOSA!"
-                    
-                    self._draw_face_box(display, (x1, y1, x2, y2), label, color)
+
+                    try:
+                        self._draw_face_box(display, (x1, y1, x2, y2), label, color)
+                    except Exception as e:
+                        print(f"DEBUG: Error en _draw_face_box(): {type(e).__name__}: {e}")
+                        break
                     
                     # Terminar si ambas transiciones fueron detectadas
                     if blink_transition_detected and mouth_transition_detected:
@@ -698,17 +746,30 @@ class FacialAuth:
                     progress += 34
             else:
                 progress = min((frames_verified / required_verified) * 33, 33)
-            
-            bar_w = int((progress / 100) * 600)
-            cv2.rectangle(display, (10, h - 40), (610, h - 20), (50, 50, 50), -1)
-            cv2.rectangle(display, (10, h - 40), (10 + bar_w, h - 20), (0, 255, 0), -1)
-            cv2.putText(display, f"Progreso: {int(progress)}%", (620, h - 25),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-            
-            cv2.imshow('Verificacion Facial', display)
-            
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                print("❌ Verificación cancelada")
+
+            try:
+                bar_w = int((progress / 100) * 600)
+                cv2.rectangle(display, (10, h - 40), (610, h - 20), (50, 50, 50), -1)
+                cv2.rectangle(display, (10, h - 40), (10 + bar_w, h - 20), (0, 255, 0), -1)
+                cv2.putText(display, f"Progreso: {int(progress)}%", (620, h - 25),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            except Exception as e:
+                print(f"DEBUG: Error en progress bar (rectangle/putText): {type(e).__name__}: {e}")
+                break
+
+            try:
+                cv2.imshow('Verificacion Facial', display)
+            except Exception as e:
+                print(f"DEBUG: Error en cv2.imshow(): {type(e).__name__}: {e}")
+                break
+
+            try:
+                key_press = cv2.waitKey(1) & 0xFF
+                if key_press == ord('q'):
+                    print("❌ Verificación cancelada")
+                    break
+            except Exception as e:
+                print(f"DEBUG: Error en cv2.waitKey(): {type(e).__name__}: {e}")
                 break
         
         cap.release()
@@ -733,3 +794,214 @@ class FacialAuth:
             print("="*60)
         
         return success
+
+    def process_verification_frame(self, frame, stored_encoding, state):
+        """
+        Procesa un frame individual para verificación en tiempo real (Flask + Socket.IO)
+        Retorna el estado actual y si la verificación está completa
+        """
+        # Detectar rostro
+        face = self._detect_face_dnn(frame)
+
+        if face is None:
+            # Si ya verificó identidad, mantener el estado (puede ser gesto extremo)
+            if state.get('identity_verified', False):
+                current_progress = 33
+                if state.get('blink_detected', False):
+                    current_progress += 33
+                if state.get('mouth_detected', False):
+                    current_progress += 34
+
+                return {
+                    'face_detected': False,
+                    'identity_verified': True,
+                    'message': 'Rostro temporalmente no detectado (continúa con los gestos)',
+                    'progress': current_progress,
+                    'blink_detected': state.get('blink_detected', False),
+                    'mouth_detected': state.get('mouth_detected', False)
+                }
+
+            return {
+                'face_detected': False,
+                'message': 'Coloca tu rostro frente a la cámara',
+                'progress': 0
+            }
+
+        x1, y1, x2, y2, conf = face
+
+        # Verificar identidad solo si aún no está verificada
+        if not state.get('identity_verified', False):
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            locations = face_recognition.face_locations(rgb, model="hog")
+
+            if not locations:
+                # No resetear si ya estamos cerca de verificar
+                if state.get('frames_verified', 0) < 5:
+                    return {
+                        'face_detected': True,
+                        'identity_verified': False,
+                        'message': 'No se puede reconocer el rostro',
+                        'progress': 0,
+                        'box': {'x1': int(x1), 'y1': int(y1), 'x2': int(x2), 'y2': int(y2)}
+                    }
+                else:
+                    # Mantener progreso si ya verificamos varios frames
+                    progress = int((state['frames_verified'] / 10) * 33)
+                    return {
+                        'face_detected': True,
+                        'identity_verified': False,
+                        'message': f'Verificando identidad... {state["frames_verified"]}/10',
+                        'progress': progress,
+                        'box': {'x1': int(x1), 'y1': int(y1), 'x2': int(x2), 'y2': int(y2)}
+                    }
+
+            encodings = face_recognition.face_encodings(rgb, locations)
+
+            if not encodings:
+                # Igual que arriba, no resetear si estamos cerca
+                if state.get('frames_verified', 0) < 5:
+                    return {
+                        'face_detected': True,
+                        'identity_verified': False,
+                        'message': 'No se puede codificar el rostro',
+                        'progress': 0,
+                        'box': {'x1': int(x1), 'y1': int(y1), 'x2': int(x2), 'y2': int(y2)}
+                    }
+                else:
+                    progress = int((state['frames_verified'] / 10) * 33)
+                    return {
+                        'face_detected': True,
+                        'identity_verified': False,
+                        'message': f'Verificando identidad... {state["frames_verified"]}/10',
+                        'progress': progress,
+                        'box': {'x1': int(x1), 'y1': int(y1), 'x2': int(x2), 'y2': int(y2)}
+                    }
+
+            matches = face_recognition.compare_faces([stored_encoding], encodings[0], tolerance=self.tolerance)
+            distance = face_recognition.face_distance([stored_encoding], encodings[0])[0]
+
+            if matches[0] and distance < self.tolerance:
+                state['frames_verified'] += 1
+            else:
+                # Solo resetear si fallamos con baja confianza
+                if state.get('frames_verified', 0) < 5:
+                    state['frames_verified'] = 0
+                    return {
+                        'face_detected': True,
+                        'identity_verified': False,
+                        'message': 'Rostro no reconocido',
+                        'progress': 0,
+                        'box': {'x1': int(x1), 'y1': int(y1), 'x2': int(x2), 'y2': int(y2)}
+                    }
+                # Si ya teníamos varios frames verificados, decrementar lentamente en lugar de resetear
+                else:
+                    state['frames_verified'] = max(0, state['frames_verified'] - 2)
+
+            # Verificar si alcanzamos el umbral
+            if state['frames_verified'] >= 10:
+                state['identity_verified'] = True
+            else:
+                progress = int((state['frames_verified'] / 10) * 33)
+                return {
+                    'face_detected': True,
+                    'identity_verified': False,
+                    'message': f'Verificando identidad... {state["frames_verified"]}/10',
+                    'progress': progress,
+                    'box': {'x1': int(x1), 'y1': int(y1), 'x2': int(x2), 'y2': int(y2)}
+                }
+
+        # Si la identidad está verificada, detectar gestos de vivacidad
+        if state.get('identity_verified', False):
+            state['identity_verified'] = True
+
+            # Detectar gestos
+            gesture, value, keypoints = self._detect_liveness_gesture(frame)
+
+            if keypoints:
+                ear = keypoints['ear']
+                mar = keypoints['mar']
+
+                # Detectar parpadeo
+                if not state['blink_detected']:
+                    # Inicializar historial en el estado si no existe
+                    if 'eye_history' not in state:
+                        state['eye_history'] = []
+
+                    current_state = "open" if ear >= self.EAR_THRESHOLD else "closed"
+                    state['eye_history'].append(current_state)
+
+                    if len(state['eye_history']) > 10:
+                        state['eye_history'].pop(0)
+
+                    # Detectar transición completa
+                    if len(state['eye_history']) >= 7:
+                        eye_hist = state['eye_history']
+                        if 'closed' in eye_hist[-5:] and eye_hist[-1] == 'open' and eye_hist[-2] == 'open':
+                            state['blink_detected'] = True
+
+                # Detectar boca
+                if not state['mouth_detected']:
+                    # Inicializar historial en el estado si no existe
+                    if 'mouth_history' not in state:
+                        state['mouth_history'] = []
+
+                    current_state = "open" if mar > self.MAR_THRESHOLD else "closed"
+                    state['mouth_history'].append(current_state)
+
+                    if len(state['mouth_history']) > 10:
+                        state['mouth_history'].pop(0)
+
+                    # Detectar transición completa
+                    if len(state['mouth_history']) >= 5:
+                        mouth_hist = state['mouth_history']
+                        if 'open' in mouth_hist[-4:] and mouth_hist[-1] == 'closed':
+                            state['mouth_detected'] = True
+
+            # Calcular progreso
+            progress = 33  # Identidad verificada
+            if state['blink_detected']:
+                progress += 33
+            if state['mouth_detected']:
+                progress += 34
+
+            # Verificar si está completo
+            if state['blink_detected'] and state['mouth_detected']:
+                return {
+                    'face_detected': True,
+                    'identity_verified': True,
+                    'blink_detected': True,
+                    'mouth_detected': True,
+                    'success': True,
+                    'message': '¡Verificación exitosa!',
+                    'progress': 100,
+                    'box': {'x1': int(x1), 'y1': int(y1), 'x2': int(x2), 'y2': int(y2)}
+                }
+
+            # Mensaje según lo que falta
+            if not state['blink_detected'] and not state['mouth_detected']:
+                message = 'Parpadea y abre la boca'
+            elif state['blink_detected'] and not state['mouth_detected']:
+                message = 'Ahora abre y cierra la boca'
+            else:
+                message = 'Ahora parpadea'
+
+            return {
+                'face_detected': True,
+                'identity_verified': True,
+                'blink_detected': state['blink_detected'],
+                'mouth_detected': state['mouth_detected'],
+                'message': message,
+                'progress': progress,
+                'box': {'x1': int(x1), 'y1': int(y1), 'x2': int(x2), 'y2': int(y2)},
+                'ear': float(ear) if keypoints else 0,
+                'mar': float(mar) if keypoints else 0
+            }
+        else:
+            progress = int((state['frames_verified'] / 10) * 33)
+            return {
+                'face_detected': True,
+                'identity_verified': False,
+                'message': f'Verificando identidad... {state["frames_verified"]}/10',
+                'progress': progress,
+                'box': {'x1': int(x1), 'y1': int(y1), 'x2': int(x2), 'y2': int(y2)}
+            }

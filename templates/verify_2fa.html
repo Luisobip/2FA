@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+
+{% block title %}Verificación 2FA{% endblock %}
+
+{% block content %}
+<div class="logo">🔒</div>
+<h1>Verificación 2FA</h1>
+<p style="text-align: center; color: #666; margin-bottom: 30px;">
+    Hola <strong>{{ username }}</strong>, verifica tu identidad
+</p>
+
+<div class="info">
+    <strong>Selecciona un método de verificación:</strong>
+</div>
+
+{% if has_facial %}
+<a href="{{ url_for('facial_verification') }}" style="text-decoration: none;">
+    <button class="btn">
+        📹 Verificación Facial
+    </button>
+</a>
+{% endif %}
+
+{% if has_voice %}
+<a href="#" style="text-decoration: none;">
+    <button class="btn btn-secondary">
+        🎤 Verificación de Voz
+    </button>
+</a>
+{% endif %}
+
+{% if not has_facial and not has_voice %}
+<div class="error">
+    No tienes métodos biométricos configurados.
+</div>
+<a href="{{ url_for('setup_biometrics') }}" style="text-decoration: none;">
+    <button class="btn">
+        Configurar Métodos Biométricos
+    </button>
+</a>
+{% endif %}
+
+<div class="link">
+    <a href="{{ url_for('logout') }}">Cerrar sesión</a>
+</div>
+{% endblock %}
