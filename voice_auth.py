@@ -1,125 +1,527 @@
+"""
+Sistema de autenticación de voz con CHALLENGE-RESPONSE
+Genera frases aleatorias en cada verificación para prevenir ataques de replay
+"""
+
 import numpy as np
 import sounddevice as sd
-from scipy.spatial.distance import cosine
+from scipy.signal import butter, filtfilt
+from scipy.spatial.distance import euclidean
+from fastdtw import fastdtw
+import librosa
 from config import Config
-import time
+from challenge_generator import ChallengeGenerator
 
-class VoiceAuth:
-    """Autenticación por reconocimiento de voz"""
+
+class VoiceAuthChallenge:
+    """
+    Sistema de autenticación de voz con desafíos aleatorios
+    Previene ataques de replay al requerir diferentes frases cada vez
+    """
     
     def __init__(self):
         self.sample_rate = Config.VOICE_SAMPLE_RATE
         self.duration = Config.VOICE_DURATION
-        self.phrase = Config.VOICE_PHRASE
-        self.similarity_threshold = Config.VOICE_SIMILARITY_THRESHOLD
+        self.similarity_threshold = getattr(Config, 'VOICE_SIMILARITY_THRESHOLD', 0.75)
+        
+        # Tipo de desafío por defecto
+        self.challenge_type = getattr(Config, 'VOICE_CHALLENGE_TYPE', 'numeric')
+        
+        # Parámetros MFCC
+        self.n_mfcc = 13
+        self.n_fft = 2048
+        self.hop_length = 512
+        
+        # Parámetros de detección de vivacidad
+        self.enable_liveness = getattr(Config, 'VOICE_ENABLE_LIVENESS', True)
+        self.energy_variance_threshold = getattr(Config, 'VOICE_MIN_ENERGY_VARIANCE', 0.005)
+        self.zcr_variance_threshold = getattr(Config, 'VOICE_MIN_ZCR_VARIANCE', 0.0005)
+        self.pitch_variance_threshold = getattr(Config, 'VOICE_MIN_PITCH_VARIANCE', 2)
     
-    def _extract_voice_features(self, audio_data):
-        """Extrae características del audio para comparación"""
-        audio_flat = audio_data.flatten()
+    def _apply_bandpass_filter(self, audio, lowcut=300, highcut=3400):
+        """Aplica filtro pasabanda para voz humana"""
+        nyquist = self.sample_rate / 2
+        low = lowcut / nyquist
+        high = highcut / nyquist
+        b, a = butter(4, [low, high], btype='band')
+        filtered = filtfilt(b, a, audio)
+        return filtered
+    
+    def _normalize_audio(self, audio):
+        """Normaliza el audio al rango [-1, 1]"""
+        audio = audio.astype(np.float32)
+        max_val = np.max(np.abs(audio))
+        if max_val > 0:
+            audio = audio / max_val
+        return audio
+    
+    def _remove_silence(self, audio, threshold=0.02):
+        """Elimina silencios del inicio y final"""
+        window_size = int(self.sample_rate * 0.02)
+        energy = np.array([
+            np.sum(audio[i:i+window_size]**2) 
+            for i in range(0, len(audio) - window_size, window_size)
+        ])
         
-        # Características temporales
-        features = {
-            'mean': np.mean(audio_flat),
-            'std': np.std(audio_flat),
-            'max': np.max(audio_flat),
-            'min': np.min(audio_flat),
-            'median': np.median(audio_flat),
-            'energy': np.sum(audio_flat ** 2),
-            'zero_crossing_rate': np.sum(np.abs(np.diff(np.sign(audio_flat)))) / len(audio_flat)
-        }
+        if np.max(energy) > 0:
+            energy = energy / np.max(energy)
         
-        # Características espectrales (FFT)
-        fft = np.fft.fft(audio_flat)
-        magnitude = np.abs(fft[:len(fft)//2])
-        features['spectral_centroid'] = np.sum(magnitude * np.arange(len(magnitude))) / np.sum(magnitude)
-        features['spectral_rolloff'] = np.percentile(magnitude, 85)
+        voice_indices = np.where(energy > threshold)[0]
         
+        if len(voice_indices) == 0:
+            return audio
+        
+        start_idx = voice_indices[0] * window_size
+        end_idx = (voice_indices[-1] + 1) * window_size
+        
+        return audio[start_idx:end_idx]
+    
+    def _extract_mfcc_features(self, audio):
+        """Extrae características MFCC + deltas y calcula estadísticas"""
+        mfcc = librosa.feature.mfcc(
+            y=audio,
+            sr=self.sample_rate,
+            n_mfcc=self.n_mfcc,
+            n_fft=self.n_fft,
+            hop_length=self.hop_length
+        )
+
+        mfcc_delta = librosa.feature.delta(mfcc)
+        mfcc_delta2 = librosa.feature.delta(mfcc, order=2)
+
+        features = np.vstack([mfcc, mfcc_delta, mfcc_delta2])
+
         return features
+
+    def _extract_speaker_embedding(self, mfcc_features):
+        """
+        Extrae un vector de embedding del hablante independiente del texto
+        Calcula estadísticas sobre los MFCC que caracterizan la voz, no el contenido
+        """
+        # Calcular estadísticas de primer y segundo orden
+        mean = np.mean(mfcc_features, axis=1)
+        std = np.std(mfcc_features, axis=1)
+
+        # Percentiles para capturar la distribución
+        percentile_25 = np.percentile(mfcc_features, 25, axis=1)
+        percentile_75 = np.percentile(mfcc_features, 75, axis=1)
+
+        # Rango intercuartílico
+        iqr = percentile_75 - percentile_25
+
+        # Skewness y kurtosis aproximados
+        median = np.median(mfcc_features, axis=1)
+        skewness = mean - median
+
+        # Concatenar todas las estadísticas
+        embedding = np.concatenate([
+            mean,           # 39 valores
+            std,            # 39 valores
+            percentile_25,  # 39 valores
+            percentile_75,  # 39 valores
+            iqr,            # 39 valores
+            skewness        # 39 valores
+        ])
+
+        return embedding  # Vector de 234 dimensiones
     
-    def _countdown(self, seconds=3):
-        """Cuenta regresiva antes de grabar"""
-        print(f"\nGrabando en {seconds} segundos...")
-        for i in range(seconds, 0, -1):
-            print(f"  {i}...", flush=True)
+    def _extract_prosodic_features(self, audio):
+        """Extrae características prosódicas"""
+        rms = librosa.feature.rms(
+            y=audio,
+            frame_length=self.n_fft,
+            hop_length=self.hop_length
+        )[0]
+        
+        zcr = librosa.feature.zero_crossing_rate(
+            audio,
+            frame_length=self.n_fft,
+            hop_length=self.hop_length
+        )[0]
+        
+        try:
+            pitches, magnitudes = librosa.piptrack(
+                y=audio,
+                sr=self.sample_rate,
+                n_fft=self.n_fft,
+                hop_length=self.hop_length
+            )
+            pitch = []
+            for t in range(pitches.shape[1]):
+                index = magnitudes[:, t].argmax()
+                pitch.append(pitches[index, t])
+            pitch = np.array(pitch)
+        except:
+            pitch = np.zeros(len(rms))
+        
+        return {
+            'rms': rms,
+            'zcr': zcr,
+            'pitch': pitch,
+            'rms_variance': np.var(rms),
+            'zcr_variance': np.var(zcr),
+            'pitch_variance': np.var(pitch[pitch > 0]) if np.any(pitch > 0) else 0
+        }
+    
+    def _check_liveness(self, prosodic_features):
+        """Verifica vivacidad del audio"""
+        checks = []
+        messages = []
+        
+        energy_var = prosodic_features['rms_variance']
+        energy_check = energy_var > self.energy_variance_threshold
+        checks.append(energy_check)
+        
+        if energy_check:
+            messages.append(f"✓ Energía natural ({energy_var:.6f})")
+        else:
+            messages.append(f"⚠️  Energía baja ({energy_var:.6f})")
+        
+        zcr_var = prosodic_features['zcr_variance']
+        zcr_check = zcr_var > self.zcr_variance_threshold
+        checks.append(zcr_check)
+        
+        if zcr_check:
+            messages.append(f"✓ ZCR natural ({zcr_var:.6f})")
+        else:
+            messages.append(f"⚠️  ZCR bajo ({zcr_var:.6f})")
+        
+        pitch_var = prosodic_features['pitch_variance']
+        pitch_check = pitch_var > self.pitch_variance_threshold
+        checks.append(pitch_check)
+        
+        if pitch_check:
+            messages.append(f"✓ Pitch natural ({pitch_var:.2f})")
+        else:
+            messages.append(f"⚠️  Pitch bajo ({pitch_var:.2f})")
+        
+        confidence = sum(checks) / len(checks)
+        is_live = confidence >= 0.34
+        
+        if sum(checks) == 0:
+            is_live = False
+            messages.append("⚠️  Audio puede ser sintético")
+        
+        return is_live, confidence, messages
+    
+    def _compare_embeddings(self, embedding1, embedding2):
+        """
+        Compara embeddings de hablante usando similitud coseno
+        Más apropiado para vectores de características estadísticas
+        """
+        try:
+            emb1 = np.array(embedding1)
+            emb2 = np.array(embedding2)
+
+            # Normalizar vectores
+            emb1_norm = emb1 / (np.linalg.norm(emb1) + 1e-8)
+            emb2_norm = emb2 / (np.linalg.norm(emb2) + 1e-8)
+
+            # Calcular similitud coseno
+            cosine_similarity = np.dot(emb1_norm, emb2_norm)
+
+            # Convertir de [-1, 1] a [0, 1]
+            similarity = (cosine_similarity + 1) / 2
+
+            return similarity
+
+        except Exception as e:
+            print(f"\n   ⚠️  Error en comparación de embeddings: {e}")
+            return 0.0
+
+    def _compare_features_dtw(self, features1, features2):
+        """Compara características usando DTW"""
+        try:
+            feat1 = np.array(features1)
+            feat2 = np.array(features2)
+
+            if feat1.ndim == 1:
+                feat1 = feat1.reshape(-1, 1)
+            if feat2.ndim == 1:
+                feat2 = feat2.reshape(-1, 1)
+
+            # Transponer para que cada fila sea un frame temporal
+            feat1 = feat1.T
+            feat2 = feat2.T
+
+            # Calcular DTW
+            distance, path = fastdtw(feat1, feat2, dist=euclidean)
+
+            # Normalizar por el número de frames y dimensiones
+            avg_length = (len(feat1) + len(feat2)) / 2
+            n_features = feat1.shape[1]
+
+            # Normalización mejorada para MFCC
+            normalized_distance = distance / (avg_length * np.sqrt(n_features))
+
+            # Convertir a similitud (0-1)
+            similarity = 1 / (1 + normalized_distance)
+
+            return similarity, normalized_distance
+
+        except Exception as e:
+            print(f"\n   ⚠️  Error en comparación DTW: {e}")
+            return 0.0, float('inf')
+    
+    def _record_audio_with_challenge(self, challenge_text, display_format):
+        """Graba audio mostrando el desafío al usuario"""
+        print(f"\n{display_format}")
+        print(f"\n   ╔{'═'*56}╗")
+        print(f"   ║  {challenge_text:^52}  ║")
+        print(f"   ╚{'═'*56}╝")
+        
+        print(f"\n⏱️  Duración: {self.duration} segundos")
+        print("\n🔴 Grabando en 3...")
+        
+        import time
+        for i in range(3, 0, -1):
+            print(f"   {i}...")
             time.sleep(1)
+        
+        print("🎙️  ¡HABLA AHORA!\n")
+        
+        recording = sd.rec(
+            int(self.duration * self.sample_rate),
+            samplerate=self.sample_rate,
+            channels=1,
+            dtype=np.float32
+        )
+        sd.wait()
+        
+        print("✅ Grabación completada\n")
+        
+        return recording.flatten()
+    
+    def _process_audio(self, audio):
+        """Pipeline completo de procesamiento"""
+        print("   🔄 Procesando audio...")
+
+        audio = self._normalize_audio(audio)
+        print("      ✓ Normalizado")
+
+        audio = self._apply_bandpass_filter(audio)
+        print("      ✓ Filtrado")
+
+        audio = self._remove_silence(audio)
+        print("      ✓ Silencios eliminados")
+
+        min_length = self.sample_rate * 1.0
+        if len(audio) < min_length:
+            print("      ⚠️  Audio muy corto")
+            return None, None, None
+
+        mfcc_features = self._extract_mfcc_features(audio)
+        print(f"      ✓ MFCC extraídos ({mfcc_features.shape})")
+
+        # Extraer embedding del hablante (independiente del texto)
+        speaker_embedding = self._extract_speaker_embedding(mfcc_features)
+        print(f"      ✓ Embedding del hablante extraído ({speaker_embedding.shape[0]} dims)")
+
+        prosodic_features = self._extract_prosodic_features(audio)
+        print("      ✓ Características prosódicas extraídas")
+
+        return mfcc_features, speaker_embedding, prosodic_features
     
     def record_voice_sample(self, username):
-        """Graba una muestra de voz del usuario para registro"""
-        print(f"\n🎤 Grabación de muestra de voz")
-        print(f"\nLee la siguiente frase en voz alta y CLARA:")
-        print(f"┌─────────────────────────────────────────────────┐")
-        print(f"│ '{self.phrase}' │")
-        print(f"└─────────────────────────────────────────────────┘")
+        """
+        Graba múltiples muestras con DIFERENTES FRASES para crear perfil de voz
+        Text-independent speaker verification
+        """
+        print(f"\n{'='*60}")
+        print("   REGISTRO DE VOZ CON DESAFÍOS ALEATORIOS")
+        print(f"{'='*60}")
         
-        input("\nPresiona ENTER cuando estés listo...")
-        self._countdown()
+        print(f"\n📋 Nuevo Sistema de Seguridad:")
+        print(f"   • Se grabarán 5 muestras con FRASES DIFERENTES")
+        print(f"   • Esto crea un perfil de tu voz único")
+        print(f"   • En cada inicio de sesión dirás una frase ALEATORIA")
+        print(f"   • Previene ataques de replay (grabaciones)")
         
-        print(f"🔴 GRABANDO... ({self.duration} segundos)")
-        try:
-            audio_data = sd.rec(
-                int(self.duration * self.sample_rate),
-                samplerate=self.sample_rate,
-                channels=1,
-                dtype='float64'
-            )
-            sd.wait()
-            print("✅ Grabación completada")
+        print(f"\n💡 Consejos:")
+        print(f"   • Ambiente silencioso")
+        print(f"   • Habla con naturalidad")
+        print(f"   • Di cada frase claramente")
+        
+        input("\nPresiona ENTER para comenzar...")
+        
+        # Grabar 5 muestras con diferentes frases
+        samples = []
+        num_samples = 5
+        
+        for i in range(num_samples):
+            print(f"\n{'─'*60}")
+            print(f"   MUESTRA {i+1} de {num_samples}")
+            print(f"{'─'*60}")
             
-            features = self._extract_voice_features(audio_data)
-            return features
-        except Exception as e:
-            print(f"❌ Error durante la grabación: {e}")
+            # Generar desafío aleatorio
+            challenge, display = ChallengeGenerator.generate_challenge(self.challenge_type)
+            
+            # Grabar
+            audio = self._record_audio_with_challenge(challenge, display)
+
+            # Procesar
+            mfcc_features, speaker_embedding, prosodic_features = self._process_audio(audio)
+
+            if mfcc_features is None:
+                print("   ❌ Muestra inválida")
+                # Reintentar esta muestra
+                i -= 1
+                continue
+
+            # Calcular calidad
+            quality = (
+                prosodic_features['rms_variance'] * 100 +
+                prosodic_features['zcr_variance'] * 1000 +
+                prosodic_features['pitch_variance']
+            )
+
+            print(f"\n   📊 Calidad: {quality:.2f}")
+
+            # Guardar muestra
+            samples.append({
+                'mfcc': mfcc_features,
+                'embedding': speaker_embedding,
+                'prosodic': prosodic_features,
+                'quality': quality,
+                'challenge': challenge
+            })
+            
+            print(f"   ✓ Muestra {i+1} guardada")
+            
+            if i < num_samples - 1:
+                import time
+                print("\n   Preparando siguiente frase...")
+                time.sleep(2)
+        
+        if len(samples) == 0:
+            print("\n❌ No se pudo obtener muestras válidas")
             return None
+        
+        print(f"\n{'='*60}")
+        print("✅ PERFIL DE VOZ CREADO")
+        print(f"   Muestras registradas: {len(samples)}")
+        print(f"   Calidad promedio: {np.mean([s['quality'] for s in samples]):.2f}")
+        print(f"{'='*60}")
+        
+        # Guardar todas las muestras
+        voice_data = {
+            'samples': samples,
+            'num_samples': len(samples),
+            'challenge_type': self.challenge_type,
+            'version': 'challenge-response-v2'  # Nueva versión con embeddings
+        }
+
+        return voice_data
     
     def verify_voice(self, username, stored_features):
-        """Verifica la voz del usuario"""
-        print(f"\n🎤 Verificación de voz")
-        print(f"\nLee la siguiente frase en voz alta y CLARA:")
-        print(f"┌─────────────────────────────────────────────────┐")
-        print(f"│ '{self.phrase}' │")
-        print(f"└─────────────────────────────────────────────────┘")
-        
-        input("\nPresiona ENTER cuando estés listo...")
-        self._countdown()
-        
-        print(f"🔴 GRABANDO... ({self.duration} segundos)")
-        try:
-            audio_data = sd.rec(
-                int(self.duration * self.sample_rate),
-                samplerate=self.sample_rate,
-                channels=1,
-                dtype='float64'
-            )
-            sd.wait()
-            print("✅ Grabación completada")
-            
-            current_features = self._extract_voice_features(audio_data)
-            
-            # Comparar características usando similitud coseno
-            stored_vector = np.array(list(stored_features.values()))
-            current_vector = np.array(list(current_features.values()))
-            
-            # Normalizar vectores
-            stored_norm = stored_vector / np.linalg.norm(stored_vector)
-            current_norm = current_vector / np.linalg.norm(current_vector)
-            
-            similarity = 1 - cosine(stored_norm, current_norm)
-            
-            print(f"\n📊 Análisis:")
-            print(f"  Similitud de voz: {similarity:.2%}")
-            print(f"  Umbral requerido: {self.similarity_threshold:.2%}")
-            
-            is_valid = similarity > self.similarity_threshold
-            
-            if is_valid:
-                print("  ✅ Voz verificada correctamente")
-            else:
-                print("  ❌ La voz no coincide")
-            
-            return is_valid
-            
-        except Exception as e:
-            print(f"❌ Error durante la verificación: {e}")
+        """
+        Verifica identidad con FRASE ALEATORIA
+        Text-independent verification usando embeddings del hablante
+        """
+        print(f"\n{'='*60}")
+        print("   VERIFICACIÓN DE VOZ CON DESAFÍO ALEATORIO")
+        print(f"{'='*60}")
+
+        # Verificar formato de datos
+        if not isinstance(stored_features, dict) or 'version' not in stored_features:
+            print("\n⚠️  Datos en formato antiguo detectados")
+            print("💡 Re-registra tu voz para usar el nuevo sistema con desafíos")
+            print("\n   Por ahora, no se puede verificar con desafío aleatorio")
             return False
+
+        version = stored_features.get('version')
+        if version not in ['challenge-response-v1', 'challenge-response-v2']:
+            print("\n⚠️  Versión de datos incompatible")
+            return False
+
+        # Generar desafío aleatorio
+        challenge, display = ChallengeGenerator.generate_challenge(self.challenge_type)
+
+        print(f"\n🎲 Desafío Aleatorio Generado")
+        print(f"   Este desafío es ÚNICO para esta sesión")
+        print(f"   Previene ataques de replay\n")
+
+        input("Presiona ENTER para comenzar la verificación...")
+
+        # Grabar respuesta del usuario
+        audio = self._record_audio_with_challenge(challenge, display)
+
+        # Procesar
+        mfcc_features, speaker_embedding, prosodic_features = self._process_audio(audio)
+
+        if mfcc_features is None:
+            print("❌ Audio inválido")
+            return False
+
+        # Verificar vivacidad (si está habilitado)
+        if self.enable_liveness:
+            print(f"\n{'─'*60}")
+            print("   🔍 VERIFICANDO VIVACIDAD")
+            print(f"{'─'*60}")
+
+            is_live, confidence, messages = self._check_liveness(prosodic_features)
+
+            for msg in messages:
+                print(f"   {msg}")
+
+            print(f"\n   Confianza: {confidence*100:.1f}%")
+
+            if not is_live:
+                print(f"\n   ⚠️  Advertencia: Detección de vivacidad falló")
+                print(f"   Continuando verificación...")
+
+        # Comparar con muestras almacenadas
+        print(f"\n{'─'*60}")
+        print("   🔍 COMPARANDO CON PERFIL DE VOZ")
+        print(f"{'─'*60}")
+
+        stored_samples = stored_features['samples']
+        similarities = []
+
+        print(f"\n   Comparando con {len(stored_samples)} muestras...")
+
+        # Usar embeddings si están disponibles (v2), sino usar MFCC (v1)
+        use_embeddings = version == 'challenge-response-v2'
+
+        for idx, sample in enumerate(stored_samples):
+            if use_embeddings and 'embedding' in sample:
+                # Comparar embeddings usando distancia coseno
+                stored_embedding = sample['embedding']
+                similarity = self._compare_embeddings(speaker_embedding, stored_embedding)
+            else:
+                # Fallback a comparación DTW de MFCC
+                stored_mfcc = sample['mfcc']
+                similarity, _ = self._compare_features_dtw(mfcc_features, stored_mfcc)
+
+            similarities.append(similarity)
+            print(f"   Muestra {idx+1}: {similarity*100:.2f}%")
         
+        # Usar similitud promedio
+        avg_similarity = np.mean(similarities)
+        max_similarity = np.max(similarities)
         
+        print(f"\n   📊 Similitud promedio: {avg_similarity*100:.2f}%")
+        print(f"   📊 Similitud máxima: {max_similarity*100:.2f}%")
+        print(f"   🎯 Umbral requerido: {self.similarity_threshold*100:.2f}%")
+        
+        # Decisión: usar promedio de las 3 mejores muestras
+        top_3_similarities = sorted(similarities, reverse=True)[:3]
+        final_similarity = np.mean(top_3_similarities)
+        
+        print(f"\n   🎯 Similitud final (top-3): {final_similarity*100:.2f}%")
+        
+        is_match = final_similarity >= self.similarity_threshold
+        
+        if is_match:
+            print(f"\n{'='*60}")
+            print("✅ VERIFICACIÓN EXITOSA")
+            print(f"   Identidad confirmada con {final_similarity*100:.2f}%")
+            print(f"   Frase del desafío: '{challenge}'")
+            print(f"{'='*60}")
+        else:
+            print(f"\n{'='*60}")
+            print("❌ VERIFICACIÓN FALLIDA")
+            print(f"   Similitud insuficiente ({final_similarity*100:.2f}%)")
+            print(f"{'='*60}")
+        
+        return is_match

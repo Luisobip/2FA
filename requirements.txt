@@ -1,10 +1,23 @@
-# requirements.txt
+# Autenticación facial
 opencv-python>=4.8.0
 face-recognition>=1.3.0
-numpy>=1.24.0
-bcrypt>=4.0.0
+dlib>=19.24.0
+
+# Procesamiento de audio y voz
 sounddevice>=0.4.6
-soundfile>=0.12.1
-SpeechRecognition>=3.10.0
+librosa>=0.10.0
 scipy>=1.11.0
+fastdtw>=0.3.4
+
+# Base de datos y seguridad
+bcrypt>=4.0.1
+
+# Utilidades
+numpy>=1.24.0
+pillow>=10.0.0
+
+# Touch ID (solo macOS)
 pyobjc-framework-LocalAuthentication>=9.0; sys_platform == 'darwin'
+
+# Auditoría de seguridad
+pip-audit>=2.6.0

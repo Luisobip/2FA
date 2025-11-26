@@ -1,18 +1,18 @@
 from database import DatabaseManager
 from facial_auth import FacialAuth
-from voice_auth import VoiceAuth
+from voice_auth import VoiceAuthChallenge
 from touchid_auth import TouchIDAuth
 from config import Config
 import time
 
 class Auth2FASystem:
     """Sistema principal de autenticación de doble factor"""
-    
+
     def __init__(self):
         Config.ensure_directories()
         self.db = DatabaseManager()
         self.facial_auth = FacialAuth()
-        self.voice_auth = VoiceAuth()
+        self.voice_auth = VoiceAuthChallenge()
         
         print("\n" + "="*60)
         print("   SISTEMA DE AUTENTICACIÓN 2FA - INICIALIZADO")
@@ -185,12 +185,12 @@ class Auth2FASystem:
         """Menú de sesión activa: añadir métodos o cerrar sesión"""
         while True:
             self._print_header(f"SESIÓN ACTIVA: {username}")
-            print("\n  1. ➕ Añadir nuevo método 2FA")
+            print("\n  1. ➕ Añadir/Re-registrar método 2FA")
             print("  2. 🚪 Cerrar sesión")
             print("\n" + "="*60)
-            
+
             choice = input("Elige una opción: ").strip()
-            
+
             if choice == '1':
                 self.add_auth_method(username)
             elif choice == '2':
@@ -202,39 +202,41 @@ class Auth2FASystem:
                 print("❌ Opción no válida. Intenta nuevamente.")
     
     def add_auth_method(self, username):
-        """Permite agregar nuevos métodos biométricos al usuario"""
-        self._print_header("AÑADIR MÉTODO DE AUTENTICACIÓN")
-        
-        print("\nMétodos disponibles para añadir:")
+        """Permite agregar o re-registrar métodos biométricos al usuario"""
+        self._print_header("AÑADIR/RE-REGISTRAR MÉTODO DE AUTENTICACIÓN")
+
+        print("\nMétodos disponibles:")
         print("  1. 👤 Reconocimiento facial")
         print("  2. 🎤 Reconocimiento de voz")
         if TouchIDAuth.is_available():
             print("  3. 👆 Touch ID (Huella dactilar)")
-        
+
         choice = input("\nElige el método (1/2/3): ").strip()
-        
+
         if choice == '1':
             if self.db.get_face_encoding(username) is not None:
-                print("⚠️ Ya tienes el reconocimiento facial configurado.")
-                return
+                confirm = input("⚠️ Ya tienes reconocimiento facial. ¿Deseas re-registrarlo? (s/n): ")
+                if confirm.lower() != 's':
+                    return
             encoding = self.facial_auth.capture_and_encode_face(username)
             if encoding is not None:
                 self.db.save_face_encoding(username, encoding)
-                print("✅ Reconocimiento facial añadido correctamente.")
+                print("✅ Reconocimiento facial configurado correctamente.")
             else:
                 print("❌ No se pudo configurar el reconocimiento facial.")
-        
+
         elif choice == '2':
             if self.db.get_voice_sample(username) is not None:
-                print("⚠️ Ya tienes el reconocimiento de voz configurado.")
-                return
+                confirm = input("⚠️ Ya tienes reconocimiento de voz. ¿Deseas re-registrarlo? (s/n): ")
+                if confirm.lower() != 's':
+                    return
             features = self.voice_auth.record_voice_sample(username)
             if features:
                 self.db.save_voice_sample(username, features)
-                print("✅ Reconocimiento de voz añadido correctamente.")
+                print("✅ Reconocimiento de voz configurado correctamente.")
             else:
                 print("❌ No se pudo configurar el reconocimiento de voz.")
-        
+
         elif choice == '3' and TouchIDAuth.is_available():
             print("✅ Touch ID habilitado como método de autenticación.")
         else:
