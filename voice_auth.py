@@ -23,20 +23,28 @@ class VoiceAuthChallenge:
         self.sample_rate = Config.VOICE_SAMPLE_RATE
         self.duration = Config.VOICE_DURATION
         self.similarity_threshold = getattr(Config, 'VOICE_SIMILARITY_THRESHOLD', 0.75)
-        
+
         # Tipo de desafío por defecto
         self.challenge_type = getattr(Config, 'VOICE_CHALLENGE_TYPE', 'numeric')
-        
+
         # Parámetros MFCC
         self.n_mfcc = 13
         self.n_fft = 2048
         self.hop_length = 512
-        
+
         # Parámetros de detección de vivacidad
         self.enable_liveness = getattr(Config, 'VOICE_ENABLE_LIVENESS', True)
         self.energy_variance_threshold = getattr(Config, 'VOICE_MIN_ENERGY_VARIANCE', 0.005)
         self.zcr_variance_threshold = getattr(Config, 'VOICE_MIN_ZCR_VARIANCE', 0.0005)
         self.pitch_variance_threshold = getattr(Config, 'VOICE_MIN_PITCH_VARIANCE', 2)
+
+    def generate_challenge(self):
+        """
+        Genera una frase de desafío aleatoria
+        Retorna solo el texto del desafío (para compatibilidad con Flask)
+        """
+        challenge_text, display_format = ChallengeGenerator.generate_challenge(self.challenge_type)
+        return challenge_text
     
     def _apply_bandpass_filter(self, audio, lowcut=300, highcut=3400):
         """Aplica filtro pasabanda para voz humana"""

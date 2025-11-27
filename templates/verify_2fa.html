@@ -22,7 +22,7 @@
 {% endif %}
 
 {% if has_voice %}
-<a href="#" style="text-decoration: none;">
+<a href="{{ url_for('voice_verification') }}" style="text-decoration: none;">
     <button class="btn btn-secondary">
         🎤 Verificación de Voz
     </button>

@@ -151,6 +151,38 @@ def facial_registration():
 
     return render_template('facial_registration.html', username=session['username'])
 
+@app.route('/voice_verification')
+def voice_verification():
+    """Página de verificación de voz"""
+    if 'username' not in session:
+        return redirect(url_for('login'))
+
+    username = session['username']
+    stored_sample = db.get_voice_sample(username)
+
+    if stored_sample is None:
+        return redirect(url_for('verify_2fa'))
+
+    # Generar frase de desafío
+    challenge_phrase = voice_auth.generate_challenge()
+
+    return render_template('voice_verification.html',
+                         username=username,
+                         challenge_phrase=challenge_phrase)
+
+@app.route('/voice_registration')
+def voice_registration():
+    """Página de registro de voz"""
+    if 'username' not in session:
+        return redirect(url_for('login'))
+
+    # Generar frase de desafío
+    challenge_phrase = voice_auth.generate_challenge()
+
+    return render_template('voice_registration.html',
+                         username=session['username'],
+                         challenge_phrase=challenge_phrase)
+
 @app.route('/verify_token')
 def verify_token():
     """Verifica el token temporal y establece la sesión HTTP"""
@@ -371,6 +403,249 @@ def handle_capture_face(data):
     except Exception as e:
         print(f"Error capturando rostro: {e}")
         emit('registration_error', {'error': str(e)})
+
+@socketio.on('request_challenge')
+def handle_request_challenge():
+    """
+    Genera una nueva frase de desafío para verificación de voz
+    """
+    try:
+        challenge_phrase = voice_auth.generate_challenge()
+        emit('new_challenge', {'challenge': challenge_phrase})
+    except Exception as e:
+        print(f"Error generando desafío: {e}")
+        emit('voice_error', {'error': str(e)})
+
+@socketio.on('verify_voice')
+def handle_verify_voice(data):
+    """
+    Verifica la voz del usuario con desafío aleatorio
+    """
+    try:
+        if 'username' not in session:
+            emit('voice_error', {'error': 'No autenticado'})
+            return
+
+        username = session['username']
+        stored_sample = db.get_voice_sample(username)
+
+        if stored_sample is None:
+            emit('voice_error', {'error': 'No hay muestra de voz registrada'})
+            return
+
+        # Decodificar audio desde base64
+        import base64
+        audio_data = base64.b64decode(data['audio'].split(',')[1])
+
+        # Guardar temporalmente
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix='.webm', delete=False) as temp_audio:
+            temp_audio.write(audio_data)
+            temp_path = temp_audio.name
+
+        # Convertir webm a wav usando ffmpeg o librosa
+        import librosa
+        import soundfile as sf
+
+        audio, sr = librosa.load(temp_path, sr=16000)
+
+        # Guardar como wav temporal
+        wav_path = temp_path.replace('.webm', '.wav')
+        sf.write(wav_path, audio, sr)
+
+        # Procesar audio con voice_auth
+        import numpy as np
+
+        # Normalizar y procesar
+        audio = voice_auth._normalize_audio(audio)
+        audio = voice_auth._apply_bandpass_filter(audio)
+        audio = voice_auth._remove_silence(audio)
+
+        # Extraer características
+        mfcc_features, speaker_embedding, prosodic_features = voice_auth._process_audio(audio)
+
+        if mfcc_features is None:
+            import os
+            os.remove(temp_path)
+            os.remove(wav_path)
+            emit('voice_verification_result', {
+                'success': False,
+                'message': 'Audio muy corto o inválido'
+            })
+            return
+
+        # Verificar vivacidad
+        if voice_auth.enable_liveness:
+            is_live, confidence, messages = voice_auth._check_liveness(prosodic_features)
+            print(f"Liveness check: {is_live}, confidence: {confidence}")
+
+        # Comparar con muestras almacenadas
+        version = stored_sample.get('version', 'unknown')
+        stored_samples = stored_sample.get('samples', [])
+
+        similarities = []
+        use_embeddings = version == 'challenge-response-v2'
+
+        for sample in stored_samples:
+            if use_embeddings and 'embedding' in sample:
+                stored_embedding = sample['embedding']
+                similarity = voice_auth._compare_embeddings(speaker_embedding, stored_embedding)
+            else:
+                stored_mfcc = sample['mfcc']
+                similarity, _ = voice_auth._compare_features_dtw(mfcc_features, stored_mfcc)
+
+            similarities.append(similarity)
+
+        # Calcular similitud final
+        if similarities:
+            top_3_similarities = sorted(similarities, reverse=True)[:3]
+            final_similarity = np.mean(top_3_similarities)
+
+            is_match = final_similarity >= voice_auth.similarity_threshold
+
+            print(f"Voice verification: {final_similarity*100:.2f}% (threshold: {voice_auth.similarity_threshold*100:.2f}%)")
+
+            # Limpiar archivos temporales
+            import os
+            os.remove(temp_path)
+            os.remove(wav_path)
+
+            if is_match:
+                # Generar token temporal
+                import uuid
+                temp_token = str(uuid.uuid4())
+
+                if not hasattr(app, 'auth_tokens'):
+                    app.auth_tokens = {}
+                app.auth_tokens[temp_token] = username
+
+                db.log_login_attempt(username, True, "voice")
+                db.update_last_login(username)
+
+                print(f"✓ Voice verification successful for {username}")
+                emit('voice_verification_result', {
+                    'success': True,
+                    'redirect': url_for('verify_token', token=temp_token)
+                })
+            else:
+                db.log_login_attempt(username, False, "voice")
+                emit('voice_verification_result', {
+                    'success': False,
+                    'message': f'Similitud insuficiente ({final_similarity*100:.2f}%)'
+                })
+        else:
+            import os
+            os.remove(temp_path)
+            os.remove(wav_path)
+            emit('voice_verification_result', {
+                'success': False,
+                'message': 'Error en comparación de voz'
+            })
+
+    except Exception as e:
+        print(f"Error en verificación de voz: {e}")
+        import traceback
+        traceback.print_exc()
+        emit('voice_error', {'error': str(e)})
+
+@socketio.on('register_voice')
+def handle_register_voice(data):
+    """
+    Registra múltiples muestras de voz del usuario
+    """
+    try:
+        if 'username' not in session:
+            emit('voice_error', {'error': 'No autenticado'})
+            return
+
+        username = session['username']
+        samples_data = data.get('samples', [])
+
+        if len(samples_data) != 5:
+            emit('voice_error', {'error': 'Se requieren 5 muestras'})
+            return
+
+        import base64
+        import tempfile
+        import librosa
+        import soundfile as sf
+        import numpy as np
+
+        processed_samples = []
+
+        for idx, sample_data in enumerate(samples_data):
+            # Decodificar audio
+            audio_data = base64.b64decode(sample_data['audio'].split(',')[1])
+
+            # Guardar temporalmente
+            with tempfile.NamedTemporaryFile(suffix='.webm', delete=False) as temp_audio:
+                temp_audio.write(audio_data)
+                temp_path = temp_audio.name
+
+            # Convertir a wav
+            audio, sr = librosa.load(temp_path, sr=16000)
+
+            # Procesar audio
+            audio = voice_auth._normalize_audio(audio)
+            audio = voice_auth._apply_bandpass_filter(audio)
+            audio = voice_auth._remove_silence(audio)
+
+            # Extraer características
+            mfcc_features, speaker_embedding, prosodic_features = voice_auth._process_audio(audio)
+
+            if mfcc_features is None:
+                import os
+                os.remove(temp_path)
+                emit('voice_error', {'error': f'Muestra {idx+1} inválida'})
+                return
+
+            # Calcular calidad
+            quality = (
+                prosodic_features['rms_variance'] * 100 +
+                prosodic_features['zcr_variance'] * 1000 +
+                prosodic_features['pitch_variance']
+            )
+
+            processed_samples.append({
+                'mfcc': mfcc_features.tolist(),
+                'embedding': speaker_embedding.tolist(),
+                'prosodic': {
+                    'rms_variance': float(prosodic_features['rms_variance']),
+                    'zcr_variance': float(prosodic_features['zcr_variance']),
+                    'pitch_variance': float(prosodic_features['pitch_variance'])
+                },
+                'quality': float(quality),
+                'challenge': sample_data['challenge']
+            })
+
+            # Limpiar
+            import os
+            os.remove(temp_path)
+
+            print(f"Processed sample {idx+1}/5 - Quality: {quality:.2f}")
+
+        # Guardar todas las muestras
+        voice_data = {
+            'samples': processed_samples,
+            'num_samples': len(processed_samples),
+            'challenge_type': voice_auth.challenge_type,
+            'version': 'challenge-response-v2'
+        }
+
+        db.save_voice_sample(username, voice_data)
+
+        # Limpiar flag de registro si está registrándose
+        if session.get('registering'):
+            session.pop('registering', None)
+
+        print(f"✓ Voice profile registered for {username}")
+        emit('voice_registration_complete', {'success': True})
+
+    except Exception as e:
+        print(f"Error en registro de voz: {e}")
+        import traceback
+        traceback.print_exc()
+        emit('voice_error', {'error': str(e)})
 
 if __name__ == '__main__':
     print("\n" + "="*60)

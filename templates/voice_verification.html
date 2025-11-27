@@ -1,0 +1,288 @@
+{% extends "base.html" %}
+
+{% block title %}Verificación de Voz{% endblock %}
+
+{% block extra_head %}
+<script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+<style>
+    .waveform {
+        width: 100%;
+        max-width: 600px;
+        height: 150px;
+        background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+        border-radius: 15px;
+        margin: 20px auto;
+        position: relative;
+        overflow: hidden;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+    }
+
+    .waveform canvas {
+        width: 100%;
+        height: 100%;
+    }
+
+    .challenge-box {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        padding: 30px;
+        border-radius: 15px;
+        color: white;
+        text-align: center;
+        margin: 20px auto;
+        max-width: 600px;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+    }
+
+    .challenge-text {
+        font-size: 32px;
+        font-weight: bold;
+        letter-spacing: 3px;
+        margin: 20px 0;
+        text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
+    }
+
+    .status-indicator {
+        display: inline-block;
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        margin-right: 10px;
+        animation: pulse 2s infinite;
+    }
+
+    .status-indicator.recording {
+        background: #ff0000;
+    }
+
+    .status-indicator.processing {
+        background: #ffaa00;
+    }
+
+    .status-indicator.ready {
+        background: #00ff00;
+    }
+
+    @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.5; }
+    }
+
+    .countdown {
+        font-size: 48px;
+        font-weight: bold;
+        color: #667eea;
+        margin: 20px 0;
+    }
+
+    #recordBtn {
+        font-size: 18px;
+        padding: 20px 40px;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="logo">🎤</div>
+<h1>Verificación de Voz</h1>
+<p style="text-align: center; color: #666; margin-bottom: 20px;">
+    Usuario: <strong>{{ username }}</strong>
+</p>
+
+<div class="info" id="instructions">
+    <strong>Instrucciones:</strong><br>
+    1. Permite el acceso a tu micrófono<br>
+    2. Lee en voz alta la frase que aparecerá<br>
+    3. Habla con claridad y naturalidad<br>
+    4. La grabación durará 5 segundos
+</div>
+
+<div class="challenge-box" id="challengeBox" style="display: none;">
+    <h3 style="margin: 0;">Di esta frase:</h3>
+    <div class="challenge-text" id="challengeText">{{ challenge_phrase }}</div>
+</div>
+
+<div class="waveform" id="waveformContainer" style="display: none;">
+    <canvas id="waveformCanvas"></canvas>
+</div>
+
+<div id="statusMessage" style="text-align: center; margin: 20px 0; font-size: 18px; min-height: 30px;"></div>
+
+<div id="countdown" class="countdown" style="display: none;"></div>
+
+<button id="recordBtn" class="btn">
+    🎙️ Iniciar Verificación
+</button>
+
+<div class="link">
+    <a href="{{ url_for('verify_2fa') }}">← Volver</a>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+    const socket = io();
+    const recordBtn = document.getElementById('recordBtn');
+    const statusMessage = document.getElementById('statusMessage');
+    const challengeBox = document.getElementById('challengeBox');
+    const waveformContainer = document.getElementById('waveformContainer');
+    const waveformCanvas = document.getElementById('waveformCanvas');
+    const ctx = waveformCanvas.getContext('2d');
+    const countdown = document.getElementById('countdown');
+    const challengeText = document.getElementById('challengeText');
+
+    let mediaRecorder;
+    let audioChunks = [];
+    let audioContext;
+    let analyser;
+    let dataArray;
+    let animationId;
+
+    // Configurar canvas
+    waveformCanvas.width = waveformCanvas.offsetWidth * 2;
+    waveformCanvas.height = waveformCanvas.offsetHeight * 2;
+
+    function drawWaveform() {
+        if (!analyser) return;
+
+        animationId = requestAnimationFrame(drawWaveform);
+
+        analyser.getByteTimeDomainData(dataArray);
+
+        ctx.fillStyle = 'rgba(30, 60, 114, 0.1)';
+        ctx.fillRect(0, 0, waveformCanvas.width, waveformCanvas.height);
+
+        ctx.lineWidth = 4;
+        ctx.strokeStyle = '#00ff88';
+        ctx.beginPath();
+
+        const sliceWidth = waveformCanvas.width / dataArray.length;
+        let x = 0;
+
+        for (let i = 0; i < dataArray.length; i++) {
+            const v = dataArray[i] / 128.0;
+            const y = v * waveformCanvas.height / 2;
+
+            if (i === 0) {
+                ctx.moveTo(x, y);
+            } else {
+                ctx.lineTo(x, y);
+            }
+
+            x += sliceWidth;
+        }
+
+        ctx.lineTo(waveformCanvas.width, waveformCanvas.height / 2);
+        ctx.stroke();
+    }
+
+    async function startRecording() {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+            // Configurar visualización
+            audioContext = new AudioContext();
+            const source = audioContext.createMediaStreamSource(stream);
+            analyser = audioContext.createAnalyser();
+            analyser.fftSize = 2048;
+            source.connect(analyser);
+            dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+            // Configurar MediaRecorder
+            mediaRecorder = new MediaRecorder(stream, {
+                mimeType: 'audio/webm;codecs=opus'
+            });
+
+            audioChunks = [];
+
+            mediaRecorder.ondataavailable = (event) => {
+                if (event.data.size > 0) {
+                    audioChunks.push(event.data);
+                }
+            };
+
+            mediaRecorder.onstop = async () => {
+                const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+
+                // Convertir a base64
+                const reader = new FileReader();
+                reader.onloadend = () => {
+                    const base64Audio = reader.result;
+                    statusMessage.innerHTML = '<span class="status-indicator processing"></span>Procesando audio...';
+                    socket.emit('verify_voice', { audio: base64Audio });
+                };
+                reader.readAsDataURL(audioBlob);
+
+                // Detener visualización
+                if (animationId) {
+                    cancelAnimationFrame(animationId);
+                }
+                stream.getTracks().forEach(track => track.stop());
+            };
+
+            // Mostrar elementos
+            challengeBox.style.display = 'block';
+            waveformContainer.style.display = 'block';
+            recordBtn.style.display = 'none';
+
+            // Countdown
+            statusMessage.innerHTML = '<span class="status-indicator ready"></span>Preparando...';
+            countdown.style.display = 'block';
+
+            for (let i = 3; i > 0; i--) {
+                countdown.textContent = i;
+                await new Promise(resolve => setTimeout(resolve, 1000));
+            }
+
+            countdown.style.display = 'none';
+
+            // Iniciar grabación
+            mediaRecorder.start();
+            statusMessage.innerHTML = '<span class="status-indicator recording"></span>¡Hablando! (5 segundos)';
+            drawWaveform();
+
+            // Detener después de 5 segundos
+            setTimeout(() => {
+                if (mediaRecorder && mediaRecorder.state === 'recording') {
+                    mediaRecorder.stop();
+                }
+            }, 5000);
+
+        } catch (err) {
+            console.error('Error al acceder al micrófono:', err);
+            statusMessage.innerHTML = '❌ Error: No se pudo acceder al micrófono';
+            statusMessage.style.color = '#ff0000';
+            recordBtn.style.display = 'block';
+        }
+    }
+
+    recordBtn.addEventListener('click', startRecording);
+
+    // Resultado de verificación
+    socket.on('voice_verification_result', (data) => {
+        if (data.success) {
+            statusMessage.innerHTML = '✅ ¡Verificación exitosa!';
+            statusMessage.style.color = '#00ff00';
+
+            setTimeout(() => {
+                window.location.href = data.redirect;
+            }, 2000);
+        } else {
+            statusMessage.innerHTML = '❌ ' + (data.message || 'Verificación fallida');
+            statusMessage.style.color = '#ff0000';
+
+            setTimeout(() => {
+                window.location.reload();
+            }, 3000);
+        }
+    });
+
+    socket.on('voice_error', (data) => {
+        console.error('Error:', data);
+        statusMessage.innerHTML = '❌ Error: ' + data.error;
+        statusMessage.style.color = '#ff0000';
+        recordBtn.style.display = 'block';
+        challengeBox.style.display = 'none';
+        waveformContainer.style.display = 'none';
+    });
+</script>
+{% endblock %}

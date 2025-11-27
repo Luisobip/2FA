@@ -6,10 +6,12 @@ Sistema de autenticación de dos factores (2FA) con verificación biométrica en
 
 - **Autenticación de usuario** con contraseña
 - **Verificación facial** con detección de vivacidad (liveness detection)
-- **Streaming de video en tiempo real** sin lag usando Socket.IO
-- **Detección anti-spoofing**: parpadeo de ojos y apertura de boca
+- **Verificación de voz** con desafíos aleatorios (challenge-response)
+- **Streaming en tiempo real** (video y audio) sin lag usando Socket.IO
+- **Detección anti-spoofing**: parpadeo de ojos, apertura de boca, y características prosódicas de voz
 - **Interfaz web moderna** y responsive
 - **Sistema tolerante a gestos** que mantiene el progreso durante expresiones faciales
+- **Frases aleatorias** en verificación de voz para prevenir ataques de replay
 
 ## 🚀 Inicio Rápido
 
@@ -45,7 +47,15 @@ Visita: **http://localhost:5001**
 4. Espera a que el recuadro se ponga **verde**
 5. Haz clic en "Capturar Rostro"
 
-### Iniciar Sesión con 2FA
+### Configurar Verificación de Voz
+
+1. Haz clic en "🎤 Registrar Voz"
+2. Permite el acceso a tu micrófono
+3. Se generarán **5 frases aleatorias diferentes**
+4. Lee cada frase en voz alta cuando aparezca
+5. El sistema creará tu perfil de voz único
+
+### Iniciar Sesión con 2FA (Facial)
 
 1. Ingresa tu usuario y contraseña
 2. Selecciona "Verificación Facial"
@@ -55,6 +65,15 @@ Visita: **http://localhost:5001**
    - ✓ **Parpadea** (cierra y abre los ojos)
    - ✓ **Abre y cierra la boca**
 5. Una vez completadas las 3 verificaciones, accederás al dashboard
+
+### Iniciar Sesión con 2FA (Voz)
+
+1. Ingresa tu usuario y contraseña
+2. Selecciona "Verificación de Voz"
+3. El sistema generará una **frase aleatoria única**
+4. Lee la frase en voz alta cuando comience la grabación
+5. El sistema verificará tu voz en tiempo real
+6. Si la verificación es exitosa, accederás al dashboard
 
 ### Añadir/Actualizar Métodos Biométricos
 
@@ -70,6 +89,8 @@ Visita: **http://localhost:5001**
 - **Socket.IO**: Comunicación bidireccional en tiempo real
 - **OpenCV**: Procesamiento de video y detección facial
 - **face_recognition**: Reconocimiento facial basado en dlib
+- **librosa**: Análisis de audio y extracción de características MFCC
+- **soundfile**: Procesamiento de archivos de audio
 - **bcrypt**: Hash seguro de contraseñas
 - **SQLite**: Base de datos para usuarios y encodings
 
@@ -90,6 +111,22 @@ Visita: **http://localhost:5001**
    - Detecta gestos de vivacidad (EAR/MAR)
 4. Servidor envía estado actualizado al cliente
 5. Cliente actualiza UI en tiempo real
+```
+
+### Flujo de Verificación de Voz
+
+```
+1. Servidor genera frase aleatoria con ChallengeGenerator
+2. Cliente muestra frase y captura audio (5 segundos)
+3. Audio se convierte a base64 y se envía por Socket.IO
+4. Servidor procesa audio:
+   - Convierte webm a wav con librosa
+   - Normaliza y aplica filtro pasabanda
+   - Extrae características MFCC y embedding del hablante
+   - Verifica vivacidad (RMS, ZCR, pitch variance)
+   - Compara con perfil de voz usando similitud coseno
+5. Servidor envía resultado al cliente
+6. Si es exitoso, genera token y redirige a dashboard
 ```
 
 ### Sistema de Tolerancia a Gestos
@@ -113,6 +150,29 @@ El sistema implementa un mecanismo tolerante que:
 - Umbral: **0.26**
 - Detecta transición: cerrada → abierta → cerrada
 
+### Verificación de Voz (Speaker Verification)
+
+#### MFCC Features (Mel-Frequency Cepstral Coefficients)
+- Extrae 13 coeficientes MFCC + deltas + delta-deltas
+- Caracteriza la voz independiente del contenido
+- Perfil de 234 dimensiones (estadísticas de MFCC)
+
+#### Características Prosódicas para Liveness
+- **RMS (Root Mean Square)**: Energía de la señal (umbral: 0.005)
+- **ZCR (Zero Crossing Rate)**: Tasa de cruces por cero (umbral: 0.0005)
+- **Pitch Variance**: Variación de tono fundamental (umbral: 2)
+
+#### Comparación de Voz
+- Usa similitud coseno entre embeddings del hablante
+- Compara con 5 muestras registradas
+- Umbral de verificación: **75%**
+- Promedio de las 3 mejores coincidencias
+
+#### Desafíos Aleatorios (Anti-Replay)
+- Frases únicas generadas en cada sesión
+- 7 tipos de desafío: numérico, alfanumérico, palabras, frases, colores, operaciones matemáticas
+- Previene ataques de replay (grabaciones)
+
 ## 🔒 Seguridad
 
 - Contraseñas hasheadas con bcrypt
@@ -133,6 +193,8 @@ El sistema implementa un mecanismo tolerante que:
 | `/verify_2fa` | Selección de método 2FA |
 | `/facial_verification` | Verificación facial con streaming |
 | `/facial_registration` | Registro de rostro |
+| `/voice_verification` | Verificación de voz con desafío aleatorio |
+| `/voice_registration` | Registro de voz (5 muestras) |
 | `/setup_biometrics` | Configuración de métodos biométricos |
 | `/dashboard` | Dashboard del usuario autenticado |
 | `/logout` | Cerrar sesión |
