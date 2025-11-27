@@ -1,3 +1,33 @@
+# Virtual environment
 .venv
-__pycache__
+venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Database files (contienen datos sensibles)
 *.db
+*.sqlite
+*.sqlite3
+users_2fa.db
+
+# Logs (pueden contener información sensible)
+*.log
+voice_verification.log
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment variables
+.env
+.env.local
