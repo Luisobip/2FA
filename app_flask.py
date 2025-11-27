@@ -14,6 +14,9 @@ from facial_auth import FacialAuth
 from voice_auth import VoiceAuthChallenge
 from config import Config
 import secrets
+import logging
+import sys
+from datetime import datetime
 
 app = Flask(__name__)
 SECRET_KEY = secrets.token_hex(32)
@@ -21,6 +24,30 @@ app.config['SECRET_KEY'] = SECRET_KEY
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 socketio = SocketIO(app, cors_allowed_origins="*", manage_session=True)
+
+# Configurar logging detallado
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[
+        logging.FileHandler('voice_verification.log'),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger(__name__)
+
+def log_and_print(message, level='info'):
+    """Imprime mensaje tanto en consola como en archivo de log"""
+    print(message)
+    sys.stdout.flush()
+    if level == 'info':
+        logger.info(message)
+    elif level == 'warning':
+        logger.warning(message)
+    elif level == 'error':
+        logger.error(message)
+    elif level == 'debug':
+        logger.debug(message)
 
 # Inicializar servicios
 db = DatabaseManager()
@@ -422,20 +449,31 @@ def handle_verify_voice(data):
     Verifica la voz del usuario con desafío aleatorio
     """
     try:
+        log_and_print(f"\n{'='*80}", 'info')
+        log_and_print(f"🎙️  INICIANDO VERIFICACIÓN DE VOZ - {datetime.now()}", 'info')
+        log_and_print(f"{'='*80}", 'info')
+
         if 'username' not in session:
+            log_and_print("❌ Error: Usuario no autenticado en sesión", 'error')
             emit('voice_error', {'error': 'No autenticado'})
             return
 
         username = session['username']
+        log_and_print(f"👤 Usuario: {username}", 'info')
+
         stored_sample = db.get_voice_sample(username)
 
         if stored_sample is None:
+            log_and_print(f"❌ Error: No hay muestra de voz registrada para {username}", 'error')
             emit('voice_error', {'error': 'No hay muestra de voz registrada'})
             return
+
+        log_and_print(f"✓ Muestra de voz encontrada en BD", 'info')
 
         # Decodificar audio desde base64
         import base64
         audio_data = base64.b64decode(data['audio'].split(',')[1])
+        log_and_print(f"✓ Audio decodificado: {len(audio_data)} bytes", 'info')
 
         # Guardar temporalmente
         import tempfile
@@ -443,50 +481,90 @@ def handle_verify_voice(data):
             temp_audio.write(audio_data)
             temp_path = temp_audio.name
 
+        log_and_print(f"✓ Audio guardado temporalmente: {temp_path}", 'debug')
+
         # Convertir webm a wav usando ffmpeg o librosa
         import librosa
         import soundfile as sf
 
         audio, sr = librosa.load(temp_path, sr=16000)
+        log_and_print(f"✓ Audio cargado: {len(audio)/sr:.2f}s a {sr}Hz", 'info')
 
         # Guardar como wav temporal
         wav_path = temp_path.replace('.webm', '.wav')
         sf.write(wav_path, audio, sr)
+        log_and_print(f"✓ Audio convertido a WAV: {wav_path}", 'debug')
 
         # Procesar audio con voice_auth
         import numpy as np
 
+        log_and_print(f"\n📊 PROCESANDO AUDIO:", 'info')
         # Normalizar y procesar
         audio = voice_auth._normalize_audio(audio)
+        log_and_print(f"  ✓ Después de normalizar: {len(audio)/voice_auth.sample_rate:.2f}s", 'info')
+
         audio = voice_auth._apply_bandpass_filter(audio)
+        log_and_print(f"  ✓ Después de filtro: {len(audio)/voice_auth.sample_rate:.2f}s", 'info')
+
         audio = voice_auth._remove_silence(audio)
+        log_and_print(f"  ✓ Después de eliminar silencio: {len(audio)/voice_auth.sample_rate:.2f}s", 'info')
 
         # Extraer características
+        log_and_print(f"\n🔍 EXTRAYENDO CARACTERÍSTICAS:", 'info')
         mfcc_features, speaker_embedding, prosodic_features = voice_auth._process_audio(audio)
 
         if mfcc_features is None:
             import os
             os.remove(temp_path)
             os.remove(wav_path)
+            log_and_print(f"❌ RECHAZADO: Audio muy corto o inválido", 'error')
             emit('voice_verification_result', {
                 'success': False,
                 'message': 'Audio muy corto o inválido'
             })
             return
 
+        log_and_print(f"  ✓ MFCC features extraídos: {mfcc_features.shape}", 'info')
+        log_and_print(f"  ✓ Speaker embedding extraído: {speaker_embedding.shape}", 'info')
+
         # Verificar vivacidad
+        log_and_print(f"\n🔒 VERIFICANDO VIVACIDAD (Anti-Spoofing):", 'info')
         if voice_auth.enable_liveness:
             is_live, confidence, messages = voice_auth._check_liveness(prosodic_features)
-            print(f"Liveness check: {is_live}, confidence: {confidence}")
+            log_and_print(f"  Resultado: {'✓ VIVO' if is_live else '❌ SINTÉTICO/GRABACIÓN'}", 'warning' if not is_live else 'info')
+            log_and_print(f"  Confianza: {confidence*100:.1f}%", 'info')
+            for msg in messages:
+                log_and_print(f"    {msg}", 'info')
+
+            # CRÍTICO: Si falla la verificación de vivacidad, rechazar inmediatamente
+            if not is_live:
+                import os
+                os.remove(temp_path)
+                os.remove(wav_path)
+                db.log_login_attempt(username, False, "voice")
+                log_and_print(f"\n{'='*80}", 'error')
+                log_and_print(f"❌ VERIFICACIÓN RECHAZADA - Detección de vivacidad falló", 'error')
+                log_and_print(f"{'='*80}\n", 'error')
+                emit('voice_verification_result', {
+                    'success': False,
+                    'message': f'Detección de vivacidad falló - posible audio sintético o grabación (confianza: {confidence*100:.1f}%)'
+                })
+                return
+        else:
+            log_and_print(f"  ⚠️  Verificación de vivacidad DESHABILITADA", 'warning')
 
         # Comparar con muestras almacenadas
+        log_and_print(f"\n🔬 COMPARANDO CON PERFIL DE VOZ ALMACENADO:", 'info')
         version = stored_sample.get('version', 'unknown')
         stored_samples = stored_sample.get('samples', [])
+        log_and_print(f"  Versión del perfil: {version}", 'info')
+        log_and_print(f"  Muestras almacenadas: {len(stored_samples)}", 'info')
 
         similarities = []
         use_embeddings = version == 'challenge-response-v2'
+        log_and_print(f"  Método de comparación: {'Speaker Embeddings' if use_embeddings else 'DTW sobre MFCC'}", 'info')
 
-        for sample in stored_samples:
+        for idx, sample in enumerate(stored_samples):
             if use_embeddings and 'embedding' in sample:
                 stored_embedding = sample['embedding']
                 similarity = voice_auth._compare_embeddings(speaker_embedding, stored_embedding)
@@ -495,20 +573,62 @@ def handle_verify_voice(data):
                 similarity, _ = voice_auth._compare_features_dtw(mfcc_features, stored_mfcc)
 
             similarities.append(similarity)
+            log_and_print(f"    Muestra {idx+1}: {similarity*100:.2f}%", 'info')
 
-        # Calcular similitud final
+        # Calcular similitud final con múltiples métricas
+        log_and_print(f"\n📈 ANÁLISIS DE SIMILITUD:", 'info')
         if similarities:
+
+            # Calcular métricas
             top_3_similarities = sorted(similarities, reverse=True)[:3]
-            final_similarity = np.mean(top_3_similarities)
+            avg_similarity = np.mean(similarities)
+            top_3_avg = np.mean(top_3_similarities)
+            max_similarity = np.max(similarities)
+            min_similarity = np.min(similarities)
 
-            is_match = final_similarity >= voice_auth.similarity_threshold
+            # Usar el promedio de las 3 mejores como similitud final
+            final_similarity = top_3_avg
 
-            print(f"Voice verification: {final_similarity*100:.2f}% (threshold: {voice_auth.similarity_threshold*100:.2f}%)")
+            log_and_print(f"  Promedio general: {avg_similarity*100:.2f}%", 'info')
+            log_and_print(f"  Promedio top-3: {top_3_avg*100:.2f}%", 'info')
+            log_and_print(f"  Máxima: {max_similarity*100:.2f}%", 'info')
+            log_and_print(f"  Mínima: {min_similarity*100:.2f}%", 'info')
+            log_and_print(f"  Umbral requerido: {voice_auth.similarity_threshold*100:.2f}%", 'info')
+
+            # Verificaciones de seguridad ajustadas para distancia euclidiana
+            log_and_print(f"\n🔐 VERIFICACIONES DE SEGURIDAD MULTI-CAPA:", 'info')
+            log_and_print(f"  (Configuración actual en config.py: VOICE_SIMILARITY_THRESHOLD={voice_auth.similarity_threshold})", 'info')
+
+            # Umbrales ajustados para distancia euclidiana (rango 30-62% vs antiguo 80-99%)
+            # Usuario legítimo: ~58-62%, impostor: ~30%
+            high_similarity_45 = sum(1 for s in similarities if s >= 0.45)  # Ajustado de 80% a 45%
+            high_similarity_50 = sum(1 for s in similarities if s >= 0.50)  # Ajustado de 85% a 50%
+            std_dev = np.std(similarities)
+
+            check1 = final_similarity >= voice_auth.similarity_threshold
+            check2 = high_similarity_45 >= 4  # Al menos 4 de 5 muestras >= 45%
+            check3 = high_similarity_50 >= 3  # Al menos 3 de 5 muestras >= 50%
+            check4 = std_dev < 0.12  # Relajado de 0.08 a 0.12 para distancia euclidiana
+
+            log_and_print(f"  [{'✓' if check1 else '❌'}] Similitud promedio top-3 >= {voice_auth.similarity_threshold*100:.0f}%: {final_similarity*100:.2f}%", 'info')
+            log_and_print(f"  [{'✓' if check2 else '❌'}] Al menos 4 de 5 muestras >= 45%: {high_similarity_45}/5", 'info')
+            log_and_print(f"  [{'✓' if check3 else '❌'}] Al menos 3 de 5 muestras >= 50%: {high_similarity_50}/5", 'info')
+            log_and_print(f"  [{'✓' if check4 else '❌'}] Alta consistencia (std < 0.12): {std_dev:.3f}", 'info')
+
+            is_match = check1 and check2 and check3 and check4
+
+            log_and_print(f"\n{'='*80}", 'info')
+            if is_match:
+                log_and_print(f"✅ RESULTADO FINAL: VERIFICACIÓN EXITOSA", 'info')
+            else:
+                log_and_print(f"❌ RESULTADO FINAL: VERIFICACIÓN RECHAZADA", 'warning')
+            log_and_print(f"{'='*80}", 'info')
 
             # Limpiar archivos temporales
             import os
             os.remove(temp_path)
             os.remove(wav_path)
+            log_and_print(f"✓ Archivos temporales eliminados", 'debug')
 
             if is_match:
                 # Generar token temporal
@@ -522,13 +642,16 @@ def handle_verify_voice(data):
                 db.log_login_attempt(username, True, "voice")
                 db.update_last_login(username)
 
-                print(f"✓ Voice verification successful for {username}")
+                log_and_print(f"\n🎉 Usuario {username} AUTENTICADO con éxito", 'info')
+                log_and_print(f"Token generado: {temp_token[:8]}...", 'debug')
                 emit('voice_verification_result', {
                     'success': True,
                     'redirect': url_for('verify_token', token=temp_token)
                 })
             else:
                 db.log_login_attempt(username, False, "voice")
+                log_and_print(f"\n⛔ Usuario {username} - Acceso DENEGADO", 'warning')
+                log_and_print(f"Razón: Similitud insuficiente ({final_similarity*100:.2f}%)", 'warning')
                 emit('voice_verification_result', {
                     'success': False,
                     'message': f'Similitud insuficiente ({final_similarity*100:.2f}%)'
@@ -537,14 +660,19 @@ def handle_verify_voice(data):
             import os
             os.remove(temp_path)
             os.remove(wav_path)
+            log_and_print(f"❌ Error: No se pudieron calcular similitudes", 'error')
             emit('voice_verification_result', {
                 'success': False,
                 'message': 'Error en comparación de voz'
             })
 
     except Exception as e:
-        print(f"Error en verificación de voz: {e}")
+        log_and_print(f"\n{'='*80}", 'error')
+        log_and_print(f"💥 ERROR CRÍTICO EN VERIFICACIÓN DE VOZ", 'error')
+        log_and_print(f"{'='*80}", 'error')
+        log_and_print(f"Excepción: {e}", 'error')
         import traceback
+        log_and_print(f"Traceback completo:", 'error')
         traceback.print_exc()
         emit('voice_error', {'error': str(e)})
 

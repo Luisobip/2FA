@@ -63,26 +63,39 @@ class VoiceAuthChallenge:
             audio = audio / max_val
         return audio
     
-    def _remove_silence(self, audio, threshold=0.02):
-        """Elimina silencios del inicio y final"""
+    def _remove_silence(self, audio, threshold=0.01):
+        """Elimina silencios del inicio y final con umbral más permisivo"""
         window_size = int(self.sample_rate * 0.02)
+
+        # Si el audio es muy corto, no procesar
+        if len(audio) < window_size * 2:
+            return audio
+
         energy = np.array([
-            np.sum(audio[i:i+window_size]**2) 
+            np.sum(audio[i:i+window_size]**2)
             for i in range(0, len(audio) - window_size, window_size)
         ])
-        
+
         if np.max(energy) > 0:
             energy = energy / np.max(energy)
-        
+
         voice_indices = np.where(energy > threshold)[0]
-        
+
+        # Si no hay suficientes índices, retornar audio completo
         if len(voice_indices) == 0:
             return audio
-        
-        start_idx = voice_indices[0] * window_size
-        end_idx = (voice_indices[-1] + 1) * window_size
-        
-        return audio[start_idx:end_idx]
+
+        # Añadir margen para no cortar demasiado
+        start_idx = max(0, (voice_indices[0] - 1) * window_size)
+        end_idx = min(len(audio), (voice_indices[-1] + 2) * window_size)
+
+        trimmed_audio = audio[start_idx:end_idx]
+
+        # Asegurar que el audio resultante no sea demasiado corto
+        if len(trimmed_audio) < self.sample_rate * 0.5:  # Al menos 0.5 segundos
+            return audio
+
+        return trimmed_audio
     
     def _extract_mfcc_features(self, audio):
         """Extrae características MFCC + deltas y calcula estadísticas"""
@@ -105,33 +118,53 @@ class VoiceAuthChallenge:
         """
         Extrae un vector de embedding del hablante independiente del texto
         Calcula estadísticas sobre los MFCC que caracterizan la voz, no el contenido
+
+        IMPORTANTE: Solo los primeros 13 coeficientes MFCC representan la voz del hablante.
+        Los deltas (14-26) y delta-deltas (27-39) capturan información temporal/dinámica
+        que varía mucho incluso para la misma persona diciendo cosas diferentes.
         """
-        # Calcular estadísticas de primer y segundo orden
-        mean = np.mean(mfcc_features, axis=1)
-        std = np.std(mfcc_features, axis=1)
+        # Separar MFCC base (0-12) de deltas y delta-deltas
+        mfcc_base = mfcc_features[:13, :]  # Solo los primeros 13 coeficientes
 
-        # Percentiles para capturar la distribución
-        percentile_25 = np.percentile(mfcc_features, 25, axis=1)
-        percentile_75 = np.percentile(mfcc_features, 75, axis=1)
+        # Calcular estadísticas SOLO sobre los MFCC base para mayor discriminación
+        mean = np.mean(mfcc_base, axis=1)
+        std = np.std(mfcc_base, axis=1)
 
-        # Rango intercuartílico
+        # Percentiles para capturar la distribución de las características del hablante
+        percentile_10 = np.percentile(mfcc_base, 10, axis=1)
+        percentile_25 = np.percentile(mfcc_base, 25, axis=1)
+        percentile_50 = np.percentile(mfcc_base, 50, axis=1)
+        percentile_75 = np.percentile(mfcc_base, 75, axis=1)
+        percentile_90 = np.percentile(mfcc_base, 90, axis=1)
+
+        # Rango intercuartílico - captura variabilidad
         iqr = percentile_75 - percentile_25
 
-        # Skewness y kurtosis aproximados
-        median = np.median(mfcc_features, axis=1)
+        # Rango completo
+        mfcc_min = np.min(mfcc_base, axis=1)
+        mfcc_max = np.max(mfcc_base, axis=1)
+        mfcc_range = mfcc_max - mfcc_min
+
+        # Skewness aproximado
+        median = percentile_50
         skewness = mean - median
 
         # Concatenar todas las estadísticas
         embedding = np.concatenate([
-            mean,           # 39 valores
-            std,            # 39 valores
-            percentile_25,  # 39 valores
-            percentile_75,  # 39 valores
-            iqr,            # 39 valores
-            skewness        # 39 valores
+            mean,           # 13 valores - características centrales de la voz
+            std,            # 13 valores - variabilidad
+            percentile_10,  # 13 valores
+            percentile_25,  # 13 valores
+            percentile_50,  # 13 valores (mediana)
+            percentile_75,  # 13 valores
+            percentile_90,  # 13 valores
+            iqr,            # 13 valores - rango intercuartílico
+            mfcc_range,     # 13 valores - rango total
+            skewness        # 13 valores - asimetría
         ])
 
-        return embedding  # Vector de 234 dimensiones
+        # Vector de 130 dimensiones (13 * 10)
+        return embedding
     
     def _extract_prosodic_features(self, audio):
         """Extrae características prosódicas"""
@@ -214,22 +247,25 @@ class VoiceAuthChallenge:
     
     def _compare_embeddings(self, embedding1, embedding2):
         """
-        Compara embeddings de hablante usando similitud coseno
-        Más apropiado para vectores de características estadísticas
+        Compara embeddings de hablante usando distancia euclidiana normalizada
+        con función de decaimiento ajustada para características de voz
         """
         try:
             emb1 = np.array(embedding1)
             emb2 = np.array(embedding2)
 
-            # Normalizar vectores
-            emb1_norm = emb1 / (np.linalg.norm(emb1) + 1e-8)
-            emb2_norm = emb2 / (np.linalg.norm(emb2) + 1e-8)
+            # Calcular distancia euclidiana
+            euclidean_distance = np.linalg.norm(emb1 - emb2)
 
-            # Calcular similitud coseno
-            cosine_similarity = np.dot(emb1_norm, emb2_norm)
+            # Normalizar la distancia dividiéndola por sqrt(dimensiones)
+            # Esto da una "distancia promedio por dimensión"
+            normalized_distance = euclidean_distance / np.sqrt(len(emb1))
 
-            # Convertir de [-1, 1] a [0, 1]
-            similarity = (cosine_similarity + 1) / 2
+            # Convertir distancia a similitud [0, 1]
+            # Con distancia euclidiana, los valores son más altos que con coseno
+            # decay_factor=22: misma persona ~55-65%, diferente persona ~25-35%
+            decay_factor = 22.0
+            similarity = np.exp(-normalized_distance / decay_factor)
 
             return similarity
 
@@ -311,11 +347,12 @@ class VoiceAuthChallenge:
         print("      ✓ Filtrado")
 
         audio = self._remove_silence(audio)
-        print("      ✓ Silencios eliminados")
+        print(f"      ✓ Silencios eliminados (duración: {len(audio)/self.sample_rate:.2f}s)")
 
-        min_length = self.sample_rate * 1.0
+        # Reducir umbral mínimo a 0.5 segundos (antes era 1.0)
+        min_length = self.sample_rate * 0.5
         if len(audio) < min_length:
-            print("      ⚠️  Audio muy corto")
+            print(f"      ⚠️  Audio muy corto: {len(audio)/self.sample_rate:.2f}s (mínimo: 0.5s)")
             return None, None, None
 
         mfcc_features = self._extract_mfcc_features(audio)

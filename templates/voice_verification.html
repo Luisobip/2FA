@@ -92,8 +92,8 @@
     <strong>Instrucciones:</strong><br>
     1. Permite el acceso a tu micrófono<br>
     2. Lee en voz alta la frase que aparecerá<br>
-    3. Habla con claridad y naturalidad<br>
-    4. La grabación durará 5 segundos
+    3. <strong>Habla despacio, con claridad y volumen normal</strong><br>
+    4. La grabación durará 6 segundos
 </div>
 
 <div class="challenge-box" id="challengeBox" style="display: none;">
@@ -237,15 +237,15 @@
 
             // Iniciar grabación
             mediaRecorder.start();
-            statusMessage.innerHTML = '<span class="status-indicator recording"></span>¡Hablando! (5 segundos)';
+            statusMessage.innerHTML = '<span class="status-indicator recording"></span>¡Habla AHORA! (6 segundos)';
             drawWaveform();
 
-            // Detener después de 5 segundos
+            // Detener después de 6 segundos
             setTimeout(() => {
                 if (mediaRecorder && mediaRecorder.state === 'recording') {
                     mediaRecorder.stop();
                 }
-            }, 5000);
+            }, 6000);
 
         } catch (err) {
             console.error('Error al acceder al micrófono:', err);

@@ -128,9 +128,10 @@
 <div class="info" id="instructions">
     <strong>Configuración de Verificación de Voz:</strong><br>
     1. Grabarás <strong>5 muestras</strong> con frases diferentes<br>
-    2. Cada grabación dura 5 segundos<br>
-    3. Habla con claridad y naturalidad<br>
-    4. Esto creará tu perfil de voz único
+    2. Cada grabación dura 6 segundos<br>
+    3. <strong>Habla despacio, con claridad y volumen normal</strong><br>
+    4. Ambiente silencioso recomendado<br>
+    5. Esto creará tu perfil de voz único
 </div>
 
 <div class="progress-tracker" id="progressTracker">
@@ -322,15 +323,15 @@
 
             // Iniciar grabación
             mediaRecorder.start();
-            statusMessage.innerHTML = `<span class="status-indicator recording"></span>¡Grabando! (5 segundos) - Muestra ${currentSample}/5`;
+            statusMessage.innerHTML = `<span class="status-indicator recording"></span>¡Habla AHORA! (6 segundos) - Muestra ${currentSample}/5`;
             drawWaveform();
 
-            // Detener después de 5 segundos
+            // Detener después de 6 segundos
             setTimeout(() => {
                 if (mediaRecorder && mediaRecorder.state === 'recording') {
                     mediaRecorder.stop();
                 }
-            }, 5000);
+            }, 6000);
 
         } catch (err) {
             console.error('Error al acceder al micrófono:', err);
