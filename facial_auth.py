@@ -20,8 +20,8 @@ class FacialAuth:
         self.encoding_buffer = deque(maxlen=3)
         
         # Umbrales para detección de vivacidad
-        self.EAR_THRESHOLD = 0.15  # Umbral para parpadeo
-        self.MAR_THRESHOLD = 0.24  # Umbral para boca abierta
+        self.EAR_THRESHOLD = 0.14  # Umbral para parpadeo
+        self.MAR_THRESHOLD = 0.23  # Umbral para boca abierta
         self.CONSECUTIVE_FRAMES = 3  # Frames necesarios para confirmar gesto
         
         # Estados para detectar transiciones

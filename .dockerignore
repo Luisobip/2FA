@@ -1,4 +1,4 @@
-# Python
+# Python cache y virtual environments
 __pycache__/
 *.pyc
 *.pyo
@@ -12,15 +12,15 @@ build/
 .venv/
 venv/
 
-# Database (no incluir datos locales en la imagen)
+# Base de datos local (se creará nueva en el contenedor)
 *.db
 *.sqlite
 *.sqlite3
 
-# Logs
+# Logs locales
 *.log
 
-# Git
+# Control de versiones
 .git/
 .gitignore
 .gitattributes
@@ -31,19 +31,18 @@ venv/
 *.swp
 *.swo
 
-# OS
+# Sistema operativo
 .DS_Store
 Thumbs.db
 
-# Docker
-Dockerfile
+# Variables de entorno locales
+.env
+.env.local
+
+# Docker files (no necesarios dentro de la imagen)
 .dockerignore
 docker-compose.yml
 
-# Documentation
-README*.md
-*.md
-
-# Environment
-.env
-.env.local
+# Documentación (opcional - puedes incluirla si quieres)
+# README*.md
+# *.md
