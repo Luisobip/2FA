@@ -2,9 +2,9 @@ import os
 
 class Config:
     """Configuración centralizada del sistema"""
-    
+
     # Base de datos
-    DATABASE_NAME = "users_2fa.db"
+    DATABASE_NAME = os.getenv("DATABASE_NAME", "users_2fa.db")
     
     # Autenticación facial
     FACE_RECOGNITION_TOLERANCE = 0.5

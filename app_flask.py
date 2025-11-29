@@ -3,6 +3,11 @@ Sistema 2FA Biométrico - Aplicación Flask con Socket.IO
 Streaming de video en tiempo real para verificación facial sin lag
 """
 
+# Suprimir warnings de Numba antes de importar cualquier librería que lo use
+import warnings
+warnings.filterwarnings('ignore', message='.*cannot cache function.*')
+warnings.filterwarnings('ignore', category=UserWarning, module='numba')
+
 from flask import Flask, render_template, request, session, redirect, url_for, jsonify
 from flask_socketio import SocketIO, emit
 import cv2
@@ -100,7 +105,7 @@ def register():
         if db.user_exists(username):
             return render_template('register.html', error="El usuario ya existe")
 
-        if db.create_user(username, password):
+        if db.register_user(username, password):
             session['username'] = username
             session['registering'] = True
             return redirect(url_for('setup_biometrics'))
@@ -310,8 +315,9 @@ def handle_video_frame(data):
             state
         )
 
-        # Enviar resultado al cliente
-        emit('verification_update', result)
+        # Enviar resultado al cliente (convertir numpy bool a Python bool)
+        safe_result = {k: (bool(v) if isinstance(v, np.bool_) else v) for k, v in result.items()}
+        emit('verification_update', safe_result)
 
         # Si la verificación es exitosa, generar token temporal y marcar como autenticado
         if result.get('success'):
@@ -374,7 +380,7 @@ def handle_register_frame(data):
                 'detected': True,
                 'confidence': float(conf),
                 'box': {'x1': int(x1), 'y1': int(y1), 'x2': int(x2), 'y2': int(y2)},
-                'ready': conf > 0.7
+                'ready': bool(conf > 0.7)
             }
             emit('face_detected', face_data)
         else:
@@ -410,7 +416,6 @@ def handle_capture_face(data):
         locations = face_recognition.face_locations(rgb, model="hog")
 
         if locations:
-            import face_recognition
             encodings = face_recognition.face_encodings(rgb, locations)
 
             if encodings:
@@ -645,16 +650,16 @@ def handle_verify_voice(data):
                 log_and_print(f"\n🎉 Usuario {username} AUTENTICADO con éxito", 'info')
                 log_and_print(f"Token generado: {temp_token[:8]}...", 'debug')
                 emit('voice_verification_result', {
-                    'success': True,
-                    'redirect': url_for('verify_token', token=temp_token)
+                    'success': bool(True),
+                    'redirect': str(url_for('verify_token', token=temp_token))
                 })
             else:
                 db.log_login_attempt(username, False, "voice")
                 log_and_print(f"\n⛔ Usuario {username} - Acceso DENEGADO", 'warning')
                 log_and_print(f"Razón: Similitud insuficiente ({final_similarity*100:.2f}%)", 'warning')
                 emit('voice_verification_result', {
-                    'success': False,
-                    'message': f'Similitud insuficiente ({final_similarity*100:.2f}%)'
+                    'success': bool(False),
+                    'message': f'Similitud insuficiente ({float(final_similarity)*100:.2f}%)'
                 })
         else:
             import os
