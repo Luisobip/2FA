@@ -71,32 +71,32 @@ Objetivo: Detectar audios sintéticos o pregrabados
 
 ### 2.5. Validación de Contenido por Speech-to-Text
 
-**Problema identificado**: El sistema text-independent solo verificaba la **identidad del hablante**, no el **contenido** pronunciado. Un usuario podría autenticarse con cualquier grabación de su voz.
+Problema identificado: El sistema text-independent solo verificaba la identidad del hablante, no el contenido pronunciado. Un usuario podría autenticarse con cualquier grabación de su voz.
 
-**Solución implementada**: Validación dual mediante STT + Biometría
+Solución implementada: Validación dual mediante STT + Biometría
 
-**Componentes**:
-1. **Transcripción automática** (Google Speech Recognition API)
-   - Idioma: Español (`es-ES`)
+Componentes:
+1. Transcripción automática (Google Speech Recognition API)
+   - Idioma: Español (es-ES)
    - Convierte audio a texto en tiempo real
 
-2. **Extracción de números**
+2. Extracción de números
    - Soporta dígitos: "3 7 1 9"
    - Soporta palabras: "tres siete uno nueve"
    - Mapeo completo 0-9 en español
 
-3. **Validación estricta**
+3. Validación estricta
    - Compara números extraídos vs. desafío esperado
    - Rechaza si no coinciden ANTES de verificar biometría
 
-**Flujo de seguridad dual**:
+Flujo de seguridad dual:
 ```
 Audio usuario → [STT: ¿Números correctos?] → [Biometría: ¿Voz correcta?] → Acceso
                       ↓ NO                          ↓ NO
                    RECHAZO                       RECHAZO
 ```
 
-**Ventajas**:
+Ventajas:
 - ✅ Mantiene ventajas text-independent para biometría
 - ✅ Previene replay con grabaciones de otras frases
 - ✅ Bloquea TTS con números incorrectos
@@ -185,6 +185,7 @@ Deployment:
   - Tamaño final: ~1.2 GB
 - Docker Volumes: Persistencia de base de datos entre reinicios
 - Makefile: Automatización de comandos comunes
+
   - make build, make run, make logs, make clean
 - Usuario no-root: Container ejecuta con privilegios limitados
 
