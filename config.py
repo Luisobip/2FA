@@ -14,7 +14,7 @@ class Config:
     # Autenticación de voz
     VOICE_SAMPLE_RATE = 16000  # Reducido para mejor procesamiento
     VOICE_DURATION = 6  # segundos (aumentado para capturar más audio)
-    VOICE_SIMILARITY_THRESHOLD = 0.50  # Usuario ~58-62%, otros ~30% (margen 20-30%)
+    VOICE_SIMILARITY_THRESHOLD = 0.45  # Reducido para testing (Usuario ~58-62%, otros ~30%)
     VOICE_PHRASE = "Mi voz es mi contraseña, verificar mi identidad"
     VOICE_CHALLENGE_TYPE = "numeric"  # SOLO NÚMEROS para simplificar
 

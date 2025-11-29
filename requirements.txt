@@ -8,6 +8,7 @@ sounddevice>=0.4.6
 librosa>=0.10.0
 scipy>=1.11.0
 fastdtw>=0.3.4
+SpeechRecognition>=3.10.0
 
 # Base de datos y seguridad
 bcrypt>=4.0.1

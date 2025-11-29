@@ -500,6 +500,36 @@ def handle_verify_voice(data):
         sf.write(wav_path, audio, sr)
         log_and_print(f"✓ Audio convertido a WAV: {wav_path}", 'debug')
 
+        # VALIDAR QUE EL USUARIO DIJO LOS NÚMEROS CORRECTOS DEL DESAFÍO
+        if 'challenge' in data:
+            expected_challenge = data['challenge']
+            log_and_print(f"\n🔐 VALIDANDO DESAFÍO DE NÚMEROS:", 'info')
+            log_and_print(f"  Desafío esperado: {expected_challenge}", 'info')
+
+            is_challenge_valid, transcription, extracted_nums = voice_auth._validate_challenge_response(audio, expected_challenge)
+
+            if transcription:
+                log_and_print(f"  Transcripción: \"{transcription}\"", 'info')
+                log_and_print(f"  Números extraídos: {extracted_nums}", 'info')
+
+            if not is_challenge_valid:
+                import os
+                os.remove(temp_path)
+                os.remove(wav_path)
+                db.log_login_attempt(username, False, "voice")
+                log_and_print(f"\n{'='*80}", 'error')
+                log_and_print(f"❌ VERIFICACIÓN RECHAZADA - Números pronunciados incorrectos", 'error')
+                log_and_print(f"{'='*80}\n", 'error')
+                emit('voice_verification_result', {
+                    'success': False,
+                    'message': f'Los números pronunciados no coinciden con el desafío. Transcripción: "{transcription if transcription else "No detectada"}"'
+                })
+                return
+
+            log_and_print(f"  ✅ Números validados correctamente", 'info')
+        else:
+            log_and_print(f"  ⚠️  No se recibió desafío - omitiendo validación de números", 'warning')
+
         # Procesar audio con voice_auth
         import numpy as np
 

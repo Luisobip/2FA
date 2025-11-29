@@ -9,6 +9,9 @@ from scipy.signal import butter, filtfilt
 from scipy.spatial.distance import euclidean
 from fastdtw import fastdtw
 import librosa
+import speech_recognition as sr
+import io
+from scipy.io import wavfile
 from config import Config
 from challenge_generator import ChallengeGenerator
 
@@ -306,7 +309,106 @@ class VoiceAuthChallenge:
         except Exception as e:
             print(f"\n   ⚠️  Error en comparación DTW: {e}")
             return 0.0, float('inf')
-    
+
+    def _transcribe_audio_to_text(self, audio):
+        """
+        Transcribe audio a texto usando Google Speech Recognition (español)
+        Retorna el texto transcrito o None si falla
+        """
+        try:
+            # Convertir numpy array a WAV en memoria
+            wav_io = io.BytesIO()
+
+            # Normalizar audio a int16 para WAV
+            audio_normalized = np.int16(audio / np.max(np.abs(audio)) * 32767)
+            wavfile.write(wav_io, self.sample_rate, audio_normalized)
+            wav_io.seek(0)
+
+            # Usar SpeechRecognition
+            recognizer = sr.Recognizer()
+
+            with sr.AudioFile(wav_io) as source:
+                audio_data = recognizer.record(source)
+
+            # Reconocer con Google Speech Recognition en español
+            text = recognizer.recognize_google(audio_data, language='es-ES')
+
+            return text.lower().strip()
+
+        except sr.UnknownValueError:
+            print("   ⚠️  No se pudo entender el audio")
+            return None
+        except sr.RequestError as e:
+            print(f"   ⚠️  Error del servicio de reconocimiento: {e}")
+            return None
+        except Exception as e:
+            print(f"   ⚠️  Error en transcripción: {e}")
+            return None
+
+    def _extract_numbers_from_spanish_text(self, text):
+        """
+        Extrae números de texto en español
+        Maneja tanto dígitos ('3 7 1 9') como palabras ('tres siete uno nueve')
+        """
+        spanish_numbers = {
+            'cero': '0', 'uno': '1', 'dos': '2', 'tres': '3', 'cuatro': '4',
+            'cinco': '5', 'seis': '6', 'siete': '7', 'ocho': '8', 'nueve': '9'
+        }
+
+        # Limpiar texto
+        text = text.lower().strip()
+
+        # Extraer todos los dígitos directamente encontrados
+        digits = []
+        words = text.split()
+
+        for word in words:
+            # Si es un dígito directo
+            if word.isdigit() and len(word) == 1:
+                digits.append(word)
+            # Si es una palabra numérica en español
+            elif word in spanish_numbers:
+                digits.append(spanish_numbers[word])
+
+        return ''.join(digits)
+
+    def _validate_challenge_response(self, audio, expected_challenge):
+        """
+        Valida que el usuario haya dicho los números correctos del desafío
+        Retorna (is_valid, transcribed_text, extracted_numbers)
+        """
+        print(f"\n{'─'*60}")
+        print("   🔍 VALIDANDO NÚMEROS PRONUNCIADOS")
+        print(f"{'─'*60}")
+
+        # Transcribir audio
+        transcribed_text = self._transcribe_audio_to_text(audio)
+
+        if transcribed_text is None:
+            print("   ❌ No se pudo transcribir el audio")
+            return False, None, None
+
+        print(f"   Transcripción: \"{transcribed_text}\"")
+
+        # Extraer números del texto transcrito
+        extracted_numbers = self._extract_numbers_from_spanish_text(transcribed_text)
+
+        # Limpiar el desafío esperado (solo dígitos)
+        expected_numbers = ''.join(filter(str.isdigit, expected_challenge))
+
+        print(f"   Números esperados: {expected_numbers}")
+        print(f"   Números extraídos: {extracted_numbers}")
+
+        # Validar coincidencia
+        is_valid = (extracted_numbers == expected_numbers)
+
+        if is_valid:
+            print(f"   ✅ Números correctos")
+        else:
+            print(f"   ❌ Números incorrectos")
+
+        return is_valid, transcribed_text, extracted_numbers
+
     def _record_audio_with_challenge(self, challenge_text, display_format):
         """Graba audio mostrando el desafío al usuario"""
         print(f"\n{display_format}")
@@ -490,6 +592,18 @@ class VoiceAuthChallenge:
 
         # Grabar respuesta del usuario
         audio = self._record_audio_with_challenge(challenge, display)
+
+        # VALIDAR QUE EL USUARIO DIJO LOS NÚMEROS CORRECTOS
+        is_challenge_valid, transcription, extracted_nums = self._validate_challenge_response(audio, challenge)
+
+        if not is_challenge_valid:
+            print(f"\n{'='*60}")
+            print("❌ VERIFICACIÓN FALLIDA")
+            print(f"   Los números pronunciados no coinciden con el desafío")
+            if transcription:
+                print(f"   Transcripción: \"{transcription}\"")
+            print(f"{'='*60}")
+            return False
 
         # Procesar
         mfcc_features, speaker_embedding, prosodic_features = self._process_audio(audio)

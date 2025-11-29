@@ -207,8 +207,12 @@
                 const reader = new FileReader();
                 reader.onloadend = () => {
                     const base64Audio = reader.result;
+                    const challenge = challengeText.textContent;
                     statusMessage.innerHTML = '<span class="status-indicator processing"></span>Procesando audio...';
-                    socket.emit('verify_voice', { audio: base64Audio });
+                    socket.emit('verify_voice', {
+                        audio: base64Audio,
+                        challenge: challenge
+                    });
                 };
                 reader.readAsDataURL(audioBlob);
 
