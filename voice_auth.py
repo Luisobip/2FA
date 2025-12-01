@@ -316,39 +316,69 @@ class VoiceAuthChallenge:
         Retorna el texto transcrito o None si falla
         """
         try:
+            print(f"   🎤 Procesando audio para STT...")
+            print(f"   📊 Longitud del audio: {len(audio)} muestras ({len(audio)/self.sample_rate:.2f}s)")
+            print(f"   📈 Energía RMS: {np.sqrt(np.mean(audio**2)):.6f}")
+
+            # Verificar que el audio no esté vacío o sea silencio
+            audio_energy = np.sqrt(np.mean(audio**2))
+            if audio_energy < 0.001:
+                print("   ⚠️  Audio con energía muy baja (posible silencio)")
+
             # Convertir numpy array a WAV en memoria
             wav_io = io.BytesIO()
 
             # Normalizar audio a int16 para WAV
-            audio_normalized = np.int16(audio / np.max(np.abs(audio)) * 32767)
+            if np.max(np.abs(audio)) > 0:
+                audio_normalized = np.int16(audio / np.max(np.abs(audio)) * 32767)
+            else:
+                print("   ⚠️  Audio vacío o silencio completo")
+                return None
+
             wavfile.write(wav_io, self.sample_rate, audio_normalized)
             wav_io.seek(0)
 
             # Usar SpeechRecognition
             recognizer = sr.Recognizer()
 
+            # Ajustar parámetros para mejorar reconocimiento
+            recognizer.energy_threshold = 300
+            recognizer.dynamic_energy_threshold = True
+
             with sr.AudioFile(wav_io) as source:
+                # Ajustar ruido ambiente
+                recognizer.adjust_for_ambient_noise(source, duration=0.5)
                 audio_data = recognizer.record(source)
+
+            print("   🌐 Enviando audio a Google Speech Recognition...")
 
             # Reconocer con Google Speech Recognition en español
             text = recognizer.recognize_google(audio_data, language='es-ES')
 
+            print(f"   ✅ Transcripción exitosa: \"{text}\"")
             return text.lower().strip()
 
         except sr.UnknownValueError:
-            print("   ⚠️  No se pudo entender el audio")
+            print("   ⚠️  Google Speech Recognition no pudo entender el audio")
+            print("   💡 Posibles causas: audio muy bajo, ruido excesivo, o idioma no detectado")
             return None
         except sr.RequestError as e:
-            print(f"   ⚠️  Error del servicio de reconocimiento: {e}")
+            print(f"   ⚠️  Error del servicio de reconocimiento de Google: {e}")
+            print("   💡 Verifica conexión a internet o límites de API")
             return None
         except Exception as e:
-            print(f"   ⚠️  Error en transcripción: {e}")
+            print(f"   ⚠️  Error inesperado en transcripción: {e}")
+            import traceback
+            traceback.print_exc()
             return None
 
     def _extract_numbers_from_spanish_text(self, text):
         """
         Extrae números de texto en español
-        Maneja tanto dígitos ('3 7 1 9') como palabras ('tres siete uno nueve')
+        Maneja tres casos:
+        1. Dígitos separados: '3 7 1 9'
+        2. Cadena continua: '3719'
+        3. Palabras: 'tres siete uno nueve'
         """
         spanish_numbers = {
             'cero': '0', 'uno': '1', 'dos': '2', 'tres': '3', 'cuatro': '4',
@@ -358,14 +388,21 @@ class VoiceAuthChallenge:
         # Limpiar texto
         text = text.lower().strip()
 
-        # Extraer todos los dígitos directamente encontrados
+        # Caso 1: Si todo el texto es una cadena de dígitos (ej: "555116")
+        if text.isdigit():
+            return text
+
+        # Caso 2 y 3: Procesar palabra por palabra
         digits = []
         words = text.split()
 
         for word in words:
-            # Si es un dígito directo
+            # Si es un dígito directo (separado por espacios)
             if word.isdigit() and len(word) == 1:
                 digits.append(word)
+            # Si es una cadena de dígitos múltiples (ej: "555" o "116")
+            elif word.isdigit():
+                digits.extend(list(word))
             # Si es una palabra numérica en español
             elif word in spanish_numbers:
                 digits.append(spanish_numbers[word])
